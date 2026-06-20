@@ -1,0 +1,27 @@
+# ─── Kubuno Books — Configuration ────────────────────────────────────────────
+# Copiez ce fichier en config.toml et adaptez les valeurs.
+# Les variables d'environnement préfixées KB__ surchargent ce fichier.
+# Exemple : KB__SERVER__PORT=3121
+
+[server]
+host = "127.0.0.1"
+port = 3121
+
+[core]
+url             = "http://127.0.0.1:8080"
+internal_secret = "change_me"
+
+# ── Base de données ───────────────────────────────────────────────────────────
+# Les paramètres de connexion sont injectés par le superviseur Kubuno via
+# KUBUNO_DB_HOST / KUBUNO_DB_PORT / KUBUNO_DB_USER / KUBUNO_DB_PASSWORD / KUBUNO_DB_NAME.
+
+[storage]
+backend    = "local"
+local_path = "/var/lib/kubuno/modules/books/files"
+temp_path  = "/var/lib/kubuno/modules/books/tmp"
+# Chemin de base du stockage du module drive (pour source_type = 'files_folder').
+# files_storage_base = "/var/lib/kubuno/modules/drive/files"
+
+[logging]
+level  = "info"
+format = "pretty"

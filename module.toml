@@ -1,0 +1,41 @@
+[module]
+id           = "books"
+display_name = "Books"
+version      = "0.1.0"
+description  = "Bibliothèque de livres, BD, comics et eBooks"
+author       = "Kubuno Contributors"
+license      = "AGPL-3.0"
+homepage_url = "https://github.com/kubuno/kubuno"
+runtime      = "rust"
+dependencies = []
+settings_path = "/books/settings"
+
+[process]
+entrypoint = "kubuno-books"
+args       = []
+
+[server]
+host = "127.0.0.1"
+port = 3121
+
+[routes]
+patterns = [
+    { method = "*", path = "/*" },
+]
+
+[[sidebar_items]]
+id       = "books"
+label    = "Books"
+icon     = "BookOpen"
+path     = "/books"
+position = 22
+section  = "main"
+
+[events]
+subscribed = [
+    "UserDeleted",
+]
+publishes = [
+    "BookAdded",
+    "BookDeleted",
+]
