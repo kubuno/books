@@ -409,6 +409,92 @@ pub async fn search_online_metadata(
     Ok(Json(json!({ "results": results })))
 }
 
+// ── Series online presentation metadata (Wikipedia / Google Books) ────────────────
+
+/// Candidate series presentations for `?q=` (Wikipedia + Google Books).
+pub async fn search_online_series(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Query(q): Query<OnlineSearchQuery>,
+) -> Result<Json<Value>, BooksError> {
+    let results = crate::services::providers::search_series(&state, &q.q, None).await;
+    Ok(Json(json!({ "results": results })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApplySeriesDto {
+    pub description:    Option<String>,
+    pub publisher:      Option<String>,
+    pub genres:         Option<Vec<String>>,
+    pub cover_url:      Option<String>,
+    pub download_cover: Option<bool>,
+}
+
+/// Apply a chosen online presentation onto a series (overwrites the given fields).
+pub async fn apply_online_series_metadata(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+    Json(dto): Json<ApplySeriesDto>,
+) -> Result<Json<Value>, BooksError> {
+    if user.role != "admin" {
+        return Err(BooksError::Forbidden);
+    }
+    let genres = dto.genres.as_ref().map(|g| json!(g));
+    let n = sqlx::query(
+        "UPDATE books.series SET \
+           description = COALESCE($2, description), \
+           publisher   = COALESCE($3, publisher), \
+           genres      = COALESCE($4, genres), \
+           updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(&dto.description)
+    .bind(&dto.publisher)
+    .bind(&genres)
+    .execute(&state.db)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(BooksError::NotFound(format!("Série {id}")));
+    }
+    let mut cover = false;
+    if dto.download_cover.unwrap_or(false) {
+        if let Some(url) = &dto.cover_url {
+            cover = crate::services::providers::download_series_cover(&state, id, url).await;
+        }
+    }
+    Ok(Json(json!({ "ok": true, "cover_downloaded": cover })))
+}
+
+/// Auto-enrich a single series from the web (fills empty fields). Admin only.
+pub async fn refresh_series_metadata(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, BooksError> {
+    if user.role != "admin" {
+        return Err(BooksError::Forbidden);
+    }
+    let applied = crate::services::providers::enrich_series(&state, id).await;
+    Ok(Json(json!({ "applied": applied })))
+}
+
+/// Auto-enrich every series of a library from the web (background). Admin only.
+pub async fn refresh_library_series_metadata(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, BooksError> {
+    if user.role != "admin" {
+        return Err(BooksError::Forbidden);
+    }
+    let st = state.clone();
+    tokio::spawn(async move { crate::services::providers::enrich_library_series(&st, id).await });
+    Ok(Json(json!({ "started": true })))
+}
+
 fn parse_date_loose(s: &str) -> Option<NaiveDate> {
     let s = s.trim();
     if let Ok(d) = NaiveDate::parse_from_str(s.get(..10).unwrap_or(s), "%Y-%m-%d") {

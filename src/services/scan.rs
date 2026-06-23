@@ -308,6 +308,20 @@ async fn run_scan(state: &AppState, library_id: Uuid) -> Result<(), BooksError> 
     .execute(&mut *tx)
     .await?;
 
+    // Repoint any book whose cover format is NULL or now dangling (e.g. formats were
+    // re-created on a rescan) to its best still-existing format, by priority.
+    sqlx::query(
+        "UPDATE books.books b SET cover_format_id = ( \
+           SELECT f.id FROM books.book_formats f WHERE f.book_id = b.id \
+           ORDER BY array_position(ARRAY['cbz','cb7','cbr','pdf','epub']::text[], f.format) NULLS LAST LIMIT 1) \
+         WHERE b.library_id = $1 \
+           AND (b.cover_format_id IS NULL \
+                OR NOT EXISTS (SELECT 1 FROM books.book_formats f WHERE f.id = b.cover_format_id))",
+    )
+    .bind(library_id)
+    .execute(&mut *tx)
+    .await?;
+
     // Recompute counts + series cover from the first book.
     sqlx::query(
         "UPDATE books.series s SET book_count = (SELECT count(*) FROM books.books b WHERE b.series_id = s.id) \
@@ -354,6 +368,9 @@ async fn run_scan(state: &AppState, library_id: Uuid) -> Result<(), BooksError> 
         let _ = sqlx::query("UPDATE books.books SET language = $2 WHERE library_id = $1 AND language IS NULL")
             .bind(library_id).bind(lang).execute(&state.db).await;
     }
+
+    // Best-effort: enrich each series with an online presentation (Wikipedia / Google Books).
+    crate::services::providers::enrich_library_series(state, library_id).await;
 
     tracing::info!(%library_id, books = groups.len(), "Scan terminé");
     Ok(())
@@ -787,6 +804,9 @@ async fn scan_remote_library(state: &AppState, library_id: Uuid, lib: &LibRow) -
         let _ = sqlx::query("UPDATE books.books SET language = $2 WHERE library_id = $1 AND language IS NULL")
             .bind(library_id).bind(lang).execute(&state.db).await;
     }
+
+    // Best-effort: enrich each series with an online presentation (Wikipedia / Google Books).
+    crate::services::providers::enrich_library_series(state, library_id).await;
 
     tracing::info!(%library_id, books = groups.len(), "Scan distant terminé");
     Ok(())
