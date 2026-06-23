@@ -135,6 +135,8 @@ export interface Series {
   folder_path: string | null
   description: string | null
   publisher: string | null
+  genres: string[]
+  tags: string[]
   book_count: number
   total_book_count: number
   cover_format_id: string | null
@@ -528,6 +530,49 @@ export interface ApplyMetadataDto {
 export async function applyOnlineMetadata(id: string, payload: ApplyMetadataDto): Promise<Book> {
   const { data } = await api.post<Book>(`/books/books/${id}/apply-metadata`, payload)
   return data
+}
+
+// ── Series online presentation (Wikipedia / Google Books) ─────────────────────
+
+/** A candidate online presentation for a series. */
+export interface SeriesOnlineResult {
+  source: string
+  title: string
+  description: string | null
+  publisher: string | null
+  authors: string[]
+  genres: string[]
+  cover_url: string | null
+}
+
+export async function searchOnlineSeries(q: string): Promise<SeriesOnlineResult[]> {
+  const { data } = await api.get<{ results: SeriesOnlineResult[] }>('/books/metadata/series-search', {
+    params: { q },
+  })
+  return data.results
+}
+
+export interface ApplySeriesMetadataDto {
+  description?: string | null
+  publisher?: string | null
+  genres?: string[]
+  cover_url?: string | null
+  download_cover?: boolean
+}
+
+export async function applyOnlineSeriesMetadata(id: string, payload: ApplySeriesMetadataDto): Promise<void> {
+  await api.post(`/books/series/${id}/apply-metadata`, payload)
+}
+
+/** Auto-enrich one series from the web (fills empty fields). Returns whether anything changed. */
+export async function refreshSeriesMetadata(id: string): Promise<boolean> {
+  const { data } = await api.post<{ applied: boolean }>(`/books/series/${id}/refresh-metadata`)
+  return data.applied
+}
+
+/** Auto-enrich every series of a library from the web (background). */
+export async function refreshLibrarySeriesMetadata(id: string): Promise<void> {
+  await api.post(`/books/libraries/${id}/refresh-series-metadata`)
 }
 
 // ── P6: collections, read lists, saved searches, facets ───────────────────────

@@ -142,6 +142,22 @@ pub async fn series_cover(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, BooksError> {
+    // A downloaded series artwork (from online enrichment) wins over a book-derived
+    // cover — but only once we've confirmed the series is visible to the user.
+    let visible = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
+         WHERE s.id = $1 AND (l.is_shared OR l.owner_id = $2))",
+    )
+    .bind(id)
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+    if visible {
+        if let Ok(custom) = state.storage.get(&format!("cache/cover/custom_series_{id}.jpg")).await {
+            return Ok(image_response("image/jpeg", custom, true));
+        }
+    }
     let fmt_id = cover_format_of(&state, user.id, "series", id).await?;
     let fmt = visible_format(&state, user.id, fmt_id).await?;
     let bytes = render_cover(&state, &fmt, fmt_id).await?;

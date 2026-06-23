@@ -4,6 +4,7 @@ import {
   RouteRegistry,
   WaffleAppRegistry,
   FaviconRegistry,
+  ModuleSettingsRegistry,
   useSidebarStore,
   SDK_VERSION,
 } from '@kubuno/sdk'
@@ -29,6 +30,9 @@ export function register() {
 
   FaviconRegistry.register('books', '/books-logo.svg')
 
+  // The header gear button opens the per-user Books settings while in /books.
+  ModuleSettingsRegistry.register('books')
+
   // Routes (paths are relative to the host shell — no leading slash).
   const LibrariesPage = lazy(() => import('./pages/LibrariesPage'))
   const LibraryPage = lazy(() => import('./pages/LibraryPage'))
@@ -42,6 +46,7 @@ export function register() {
   const ReadListsPage = lazy(() => import('./pages/ReadListsPage'))
   const ReadListPage = lazy(() => import('./pages/ReadListPage'))
   const DuplicatesPage = lazy(() => import('./pages/DuplicatesPage'))
+  const BooksSettingsPage = lazy(() => import('./pages/BooksSettingsPage'))
 
   RouteRegistry.register('books', LibrariesPage)
   RouteRegistry.register('books/library/:id', LibraryPage)
@@ -55,4 +60,5 @@ export function register() {
   RouteRegistry.register('books/readlists', ReadListsPage)
   RouteRegistry.register('books/readlist/:id', ReadListPage)
   RouteRegistry.register('books/duplicates', DuplicatesPage)
+  RouteRegistry.register('books/settings', BooksSettingsPage)
 }

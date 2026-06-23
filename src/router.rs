@@ -19,11 +19,14 @@ pub fn build(state: AppState) -> Router {
         .route("/libraries/:id/scan",        post(libraries::start_scan))
         .route("/libraries/:id/scan/status", get(libraries::scan_status))
         .route("/libraries/:id/refresh-metadata", post(content::refresh_library_metadata))
+        .route("/libraries/:id/refresh-series-metadata", post(content::refresh_library_series_metadata))
         // Series
         .route("/series",                    get(content::list_series))
         .route("/series/:id",                get(content::get_series).patch(content::update_series))
         .route("/series/:id/books",          get(content::series_books))
         .route("/series/:id/cover",          get(media::series_cover))
+        .route("/series/:id/refresh-metadata", post(content::refresh_series_metadata))
+        .route("/series/:id/apply-metadata", post(content::apply_online_series_metadata))
         // Books
         .route("/books",                     get(content::list_books))
         .route("/books/recent",              get(content::recent_books))
@@ -34,6 +37,7 @@ pub fn build(state: AppState) -> Router {
         .route("/books/:id/apply-metadata",  post(content::apply_online_metadata))
         // Online metadata search (OpenLibrary / Google Books)
         .route("/metadata/search",           get(content::search_online_metadata))
+        .route("/metadata/series-search",    get(content::search_online_series))
         // Organisation: collections / read lists / saved searches / facets
         .route("/collections",               get(organize::list_collections).post(organize::create_collection))
         .route("/collections/:id",           get(organize::get_collection).patch(organize::update_collection).delete(organize::delete_collection))
