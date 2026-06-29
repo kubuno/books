@@ -1,7 +1,7 @@
 [module]
 id           = "books"
 display_name = "Books"
-version      = "0.1.2"
+version      = "0.1.3"
 description  = "Bibliothèque de livres, BD, comics et eBooks"
 author       = "Kubuno Contributors"
 license      = "AGPL-3.0"
