@@ -1,6 +1,6 @@
 [package]
 name        = "kubuno-books"
-version     = "0.1.0-alpha"
+version     = "0.1.2"
 edition     = "2021"
 description = "Kubuno Books — bibliothèque de livres, BD, comics et eBooks"
 license     = "AGPL-3.0"
@@ -52,7 +52,7 @@ tokio-util  = { version = "0.7", features = ["io"] }  # ReaderStream for raw fil
 [workspace]
 
 [workspace.package]
-version      = "0.1.0-alpha"
+version      = "0.1.2"
 edition      = "2021"
 authors      = ["Kubuno Contributors"]
 license      = "AGPL-3.0"
