@@ -3,14 +3,14 @@
   SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 
-# Kubuno Media
+# Kubuno Books
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/Rust-edition_2021-orange.svg)
 ![React](https://img.shields.io/badge/React-19-61dafb.svg)
 ![Module](https://img.shields.io/badge/Kubuno-module-4D38DB.svg)
 
-**Kubuno Media — Watch (films/séries) et Listen (musique)**
+**Kubuno Books — a library for your books, comics and eBooks**
 
 A module for [Kubuno](https://github.com/kubuno/core), the self-hosted, libre (AGPLv3) cloud platform.
 
@@ -25,7 +25,9 @@ A standalone Rust process that registers with the [core](https://github.com/kubu
 
 This module ships in the **all-in-one [Kubuno](https://github.com/kubuno/core) Docker image** (`ghcr.io/kubuno/kubuno`) — the easiest way to self-host a full Kubuno instance (core + every module). See **[kubuno/docker](https://github.com/kubuno/docker)** for `docker compose` instructions.
 
-To build this module from source (Debian package), see below.
+**Native packages** for every supported platform are attached to each [GitHub Release](https://github.com/kubuno/books/releases): Debian/Ubuntu (`.deb`), Fedora/RHEL/openSUSE (`.rpm`), Windows (NSIS installer), and macOS (`.pkg`). They all install the module into an existing Kubuno core installation and restart the service.
+
+To build this module from source, see below.
 
 ## Build
 
@@ -35,6 +37,14 @@ To build this module from source (Debian package), see below.
 cargo build --release                     # → target/release/kubuno-books
 cd frontend && npm ci && npm run build     # → dist/{entry.js, entry.css}
 bash build_deb.sh                          # → dist/kubuno-books_*.deb
+```
+
+Native packages for the other platforms are produced by self-detecting scripts sharing the same layout as the `.deb` (also run by CI on release tags):
+
+```bash
+bash build_rpm.sh                          # → dist/kubuno-books-*.rpm   (Fedora/RHEL/openSUSE)
+bash build_windows.sh                      # → dist/kubuno-books-setup-*-x64.exe (NSIS; cargo-xwin from Linux)
+bash build_macos.sh                        # → dist/kubuno-books-*-arm64.pkg     (run on a Mac)
 ```
 
 > Shared dependencies come from Kubuno — no `kubuno/core` checkout required:
