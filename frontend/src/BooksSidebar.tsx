@@ -1,4 +1,4 @@
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Library, Clock, Compass, FolderHeart, ListChecks, CopyCheck } from 'lucide-react'
 import { SidebarNavItem, useAuthStore } from '@kubuno/sdk'
@@ -35,7 +35,6 @@ const ORGANIZE_ITEMS: NavEntry[] = [
 ]
 
 export default function BooksSidebar({ collapsed = false }: { collapsed?: boolean }) {
-  const navigate     = useNavigate()
   const { pathname } = useLocation()
   const { t }        = useTranslation('books')
   const user         = useAuthStore((s) => s.user)
@@ -56,8 +55,9 @@ export default function BooksSidebar({ collapsed = false }: { collapsed?: boolea
     items
       .filter((it) => !it.adminOnly || isAdmin)
       .map(({ labelKey, icon, path }) => (
+        // `to` makes the item a real <a href> (React Router <Link>), never a <button>.
         <SidebarNavItem collapsed={collapsed} key={path} label={t(labelKey)} icon={icon}
-          active={isActive(path)} onClick={() => navigate(path)} />
+          active={isActive(path)} to={path} />
       ))
 
   return (
