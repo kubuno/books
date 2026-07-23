@@ -705,7 +705,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1447,8 +1447,8 @@ dependencies = [
 
 [[package]]
 name = "kubuno-seccomp"
-version = "0.1.0"
-source = "git+https://github.com/kubuno/core?tag=seccomp-v0.1.0#802672107461a863de2e85d683408e573521d0d0"
+version = "0.1.1"
+source = "git+https://github.com/kubuno/core?tag=seccomp-v0.1.1#5a74e6d117d1c2c386af88902017341b88a0d7c7"
 dependencies = [
  "libc",
  "tracing",
@@ -1456,8 +1456,8 @@ dependencies = [
 
 [[package]]
 name = "kubuno-storage"
-version = "0.1.0"
-source = "git+https://github.com/kubuno/core?tag=storage-v0.1.0#802672107461a863de2e85d683408e573521d0d0"
+version = "0.1.1"
+source = "git+https://github.com/kubuno/core?tag=storage-v0.1.1#5a74e6d117d1c2c386af88902017341b88a0d7c7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2255,7 +2255,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2849,7 +2849,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3574,7 +3574,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
