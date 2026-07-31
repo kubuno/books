@@ -1,6 +1,6 @@
 [package]
 name        = "kubuno-books"
-version     = "0.1.4"
+version     = "0.1.5"
 edition     = "2021"
 description = "Kubuno Books — bibliothèque de livres, BD, comics et eBooks"
 license     = "AGPL-3.0"
