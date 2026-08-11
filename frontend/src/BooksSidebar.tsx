@@ -7,7 +7,8 @@ function SectionLabel({ label, collapsed }: { label: string; collapsed?: boolean
   if (collapsed) return <div className="mx-2 my-2 h-px bg-border" />
   return (
     <div className="px-3 pt-4 pb-1">
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">
+      {/* Sidebar section headings: 14px bold, no forced caps, no letter-spacing. */}
+      <span className="text-sm font-bold text-text-secondary">
         {label}
       </span>
     </div>
@@ -61,7 +62,7 @@ export default function BooksSidebar({ collapsed = false }: { collapsed?: boolea
       ))
 
   return (
-    <nav className={`flex-1 overflow-y-auto py-1 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
+    <nav className={`flex-1 overflow-y-auto py-1 space-y-0.5 px-2`}>
       <SectionLabel collapsed={collapsed} label={t('books_section_collection')} />
       {renderItems(COLLECTION_ITEMS)}
       <SectionLabel collapsed={collapsed} label={t('books_section_organize')} />
