@@ -310,14 +310,21 @@ pub async fn start_scan(
     Ok(Json(json!({ "message": "Scan démarré", "library_id": id })))
 }
 
+/// Progress of a scan. Restricted like every other library route: this was the
+/// only authenticated handler that never looked at WHO was asking, so it
+/// confirmed the existence of any library id to anybody — including ones the
+/// reader's restriction hides.
 pub async fn scan_status(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
     let status: Option<String> = sqlx::query_scalar::<_, String>(
-        "SELECT scan_status FROM books.libraries WHERE id = $1",
+        "SELECT scan_status FROM books.libraries \
+         WHERE id = $1 AND (is_shared = TRUE OR owner_id = $2) AND books.lib_allowed($2, id)",
     )
     .bind(id)
+    .bind(user.id)
     .fetch_optional(&state.db)
     .await?;
 

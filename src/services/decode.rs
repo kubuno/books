@@ -295,6 +295,51 @@ pub struct EmbeddedMeta {
     pub language:    Option<String>,
     pub isbn:        Option<String>,
     pub rtl:         bool,
+    /// Minimum age the content declares, in years, normalised from ComicInfo's
+    /// `<AgeRating>`. `None` = the file says nothing, which is NOT the same as
+    /// "suitable for everyone" — see `books.content_ok`.
+    pub age_rating:  Option<i32>,
+}
+
+/// Normalises a ComicInfo `<AgeRating>` into a minimum age in years.
+///
+/// The tag is a closed vocabulary in the specification, but files in the wild
+/// also carry the plain ratings of their region, so both are accepted. Anything
+/// unrecognised yields `None` rather than a guess: inventing an age would be
+/// inventing a protection.
+pub fn age_rating_years(raw: &str) -> Option<i32> {
+    let v = raw.trim().to_ascii_lowercase();
+    if v.is_empty() || v == "unknown" || v == "rating pending" {
+        return None;
+    }
+    // ComicInfo's own vocabulary.
+    let known = [
+        ("early childhood", 3),
+        ("everyone 10+", 10),
+        ("everyone", 0),
+        ("kids to adults", 0),
+        ("g", 0),
+        ("pg", 8),
+        ("teen", 13),
+        ("ma15+", 15),
+        ("mature 17+", 17),
+        ("m", 17),
+        ("r18+", 18),
+        ("adults only 18+", 18),
+        ("x18+", 18),
+        // Regional forms seen on real files.
+        ("tous publics", 0),
+        ("u", 0),
+    ];
+    if let Some((_, years)) = known.iter().find(|(k, _)| *k == v) {
+        return Some(*years);
+    }
+    // Numeric forms: "12", "-12", "12+", "16 ans", "fsk 16".
+    let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || digits.len() > 2 {
+        return None;
+    }
+    digits.parse::<i32>().ok().filter(|n| (0..=21).contains(n))
 }
 
 /// Extract embedded metadata for a format (best-effort).
@@ -334,6 +379,7 @@ fn comicinfo(format: &str, path: &Path) -> Option<EmbeddedMeta> {
         language: get("LanguageISO"),
         tags: get("Genre").map(|g| split_csv(&g)).unwrap_or_default(),
         rtl: get("Manga").map(|s| s.eq_ignore_ascii_case("YesAndRightToLeft")).unwrap_or(false),
+        age_rating: get("AgeRating").as_deref().and_then(age_rating_years),
         ..Default::default()
     };
     for (tag, role) in [
@@ -459,4 +505,49 @@ pub fn thumbnail(bytes: &[u8], max_w: u32) -> Result<Vec<u8>, BooksError> {
     rgb.write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg)
         .map_err(|e| BooksError::Storage(e.to_string()))?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::age_rating_years;
+
+    /// The vocabulary of the specification, which is what tagged files carry.
+    #[test]
+    fn comicinfo_vocabulary_maps_to_years() {
+        assert_eq!(age_rating_years("Everyone"), Some(0));
+        assert_eq!(age_rating_years("Everyone 10+"), Some(10));
+        assert_eq!(age_rating_years("Teen"), Some(13));
+        assert_eq!(age_rating_years("Mature 17+"), Some(17));
+        assert_eq!(age_rating_years("Adults Only 18+"), Some(18));
+    }
+
+    #[test]
+    fn matching_ignores_case_and_surrounding_space() {
+        assert_eq!(age_rating_years("  TEEN "), Some(13));
+        assert_eq!(age_rating_years("everyone 10+"), Some(10));
+    }
+
+    /// Regional forms real files carry instead of the specification's.
+    #[test]
+    fn numeric_and_regional_forms_are_understood() {
+        assert_eq!(age_rating_years("12"), Some(12));
+        assert_eq!(age_rating_years("-12"), Some(12));
+        assert_eq!(age_rating_years("16+"), Some(16));
+        assert_eq!(age_rating_years("FSK 18"), Some(18));
+        assert_eq!(age_rating_years("Tous publics"), Some(0));
+    }
+
+    /// The important half: an unknown or absent rating must NOT be turned into
+    /// an age. A guess here would be a protection that does not exist — the row
+    /// stays unrated, and `books.content_ok` decides what unrated means.
+    #[test]
+    fn anything_unrecognised_stays_unrated() {
+        assert_eq!(age_rating_years(""), None);
+        assert_eq!(age_rating_years("   "), None);
+        assert_eq!(age_rating_years("Unknown"), None);
+        assert_eq!(age_rating_years("Rating Pending"), None);
+        assert_eq!(age_rating_years("nawak"), None);
+        // A year mistakenly put in the field must not read as an age.
+        assert_eq!(age_rating_years("1998"), None);
+    }
 }

@@ -15,6 +15,20 @@ const BOOK_EXTS: &[&str] = &["cbz", "cbr", "cb7", "pdf", "epub"];
 /// Cover/primary format preference (image-based first).
 const FORMAT_PRIORITY: &[&str] = &["cbz", "cb7", "cbr", "pdf", "epub"];
 
+/// Instance-wide default metadata language (`books.settings.metadata_language`,
+/// set by an admin). Used only when a library leaves its own `metadata_language`
+/// blank, so a fresh library inherits the instance default instead of guessing.
+async fn global_meta_lang(db: &sqlx::PgPool) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT value FROM books.settings WHERE key = 'metadata_language'",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .filter(|s| !s.is_empty())
+}
+
 #[derive(sqlx::FromRow)]
 struct LibRow {
     source_type:      String,
@@ -119,8 +133,12 @@ async fn run_scan(state: &AppState, library_id: Uuid) -> Result<(), BooksError> 
     let hash_files = getb("/options/hash_files", true);
     let default_rdir = s.pointer("/options/default_reading_direction").and_then(|v| v.as_str())
         .filter(|x| !x.is_empty()).map(|x| x.to_string());
-    let meta_lang = s.pointer("/metadata/metadata_language").and_then(|v| v.as_str())
-        .filter(|x| !x.is_empty()).map(|x| x.to_string());
+    let meta_lang = match s.pointer("/metadata/metadata_language").and_then(|v| v.as_str())
+        .filter(|x| !x.is_empty())
+    {
+        Some(l) => Some(l.to_string()),
+        None => global_meta_lang(&state.db).await,
+    };
 
     // Root folder path (cross-schema read into the drive schema).
     let root_path = sqlx::query_scalar::<_, String>(
@@ -549,8 +567,12 @@ async fn scan_remote_library(state: &AppState, library_id: Uuid, lib: &LibRow) -
         .unwrap_or("").trim().to_string();
     let default_rdir = s.pointer("/options/default_reading_direction").and_then(|v| v.as_str())
         .filter(|x| !x.is_empty()).map(String::from);
-    let meta_lang = s.pointer("/metadata/metadata_language").and_then(|v| v.as_str())
-        .filter(|x| !x.is_empty()).map(String::from);
+    let meta_lang = match s.pointer("/metadata/metadata_language").and_then(|v| v.as_str())
+        .filter(|x| !x.is_empty())
+    {
+        Some(l) => Some(l.to_string()),
+        None => global_meta_lang(&state.db).await,
+    };
 
     let mut exts: Vec<String> = Vec::new();
     if scan_comics { exts.extend(["cbz", "cbr", "cb7"].iter().map(|s| s.to_string())); }

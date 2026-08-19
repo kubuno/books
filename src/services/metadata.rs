@@ -75,6 +75,13 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
     let series_index = allow_series.then_some(m.number).flatten();
     let rdir = (allow_series && m.rtl).then(|| "rtl".to_string());
 
+    // The age rating is what makes the parental control mean anything: until it
+    // is filled, every book is unrated and an age ceiling filters nothing. It is
+    // written only when the instance asks for it, and — like every other field
+    // here — only into an EMPTY column, so an administrator's correction is
+    // never overwritten by a rescan.
+    let age_rating = state.instance().import_age_rating.then_some(m.age_rating).flatten();
+
     sqlx::query(
         "UPDATE books.books SET \
            description       = COALESCE(description, $2), \
@@ -87,6 +94,7 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
            series_index      = COALESCE(series_index, $9), \
            reading_direction = COALESCE(reading_direction, $10), \
            title             = CASE WHEN $11::text IS NOT NULL THEN $11 ELSE title END, \
+           age_rating        = COALESCE(age_rating, $12), \
            updated_at = now() \
          WHERE id = $1",
     )
@@ -101,12 +109,21 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
     .bind(series_index)
     .bind(rdir)
     .bind(title_override)
+    .bind(age_rating)
     .execute(&state.db)
     .await?;
     Ok(true)
 }
 
 /// Import embedded metadata for all books in a library that still lack it (best-effort).
+///
+/// NOTE on the age rating: the selection below is deliberately narrow — it only
+/// picks books that were never enriched at all. So turning `import_age_rating`
+/// ON does not retro-rate a library that was already scanned: it applies to
+/// books indexed from then on. Widening it to "every unrated book" would mean
+/// re-opening and re-decoding every unrated file on EVERY scan, forever, since
+/// most files carry no rating at all and would stay selected. Existing books are
+/// rated from the metadata editor instead.
 pub async fn import_library(state: &AppState, library_id: Uuid) {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM books.books WHERE library_id = $1 AND description IS NULL AND authors = '[]'::jsonb",

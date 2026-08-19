@@ -250,6 +250,51 @@ export async function getScanStatus(id: string): Promise<{ status: ScanStatus }>
   return data
 }
 
+// ── Instance administration (admin only; enforced server-side) ─────────────────
+
+/** Instance-wide books settings, keyed as in `books.settings`. */
+export interface BooksAdminSettings {
+  /** Default metadata language (ISO code) libraries inherit when left blank. */
+  metadata_language?: string
+}
+
+export async function getAdminSettings(): Promise<BooksAdminSettings> {
+  const { data } = await api.get<BooksAdminSettings>('/books/admin/settings')
+  return data
+}
+
+export async function patchAdminSettings(patch: BooksAdminSettings): Promise<void> {
+  await api.patch('/books/admin/settings', patch)
+}
+
+// ── Per-account restrictions ──────────────────────────────────────────────────
+// Allowed libraries + age ceiling. Enforced server-side on EVERY route that
+// returns content (listings, search, covers, page images, download, OPDS,
+// export), not only where the console shows them.
+
+export interface UserRestriction {
+  id:           string
+  email:        string
+  display_name: string | null
+  role:         string
+  /** `null` = every library allowed. `[]` = none. */
+  library_ids:  string[] | null
+  /** `null` = no age ceiling. */
+  age_max:      number | null
+}
+
+export async function listRestrictions(): Promise<UserRestriction[]> {
+  const { data } = await api.get<{ users: UserRestriction[] }>('/books/admin/restrictions')
+  return data.users
+}
+
+export async function setRestrictions(
+  userId: string,
+  body: { library_ids: string[] | null; age_max: number | null },
+): Promise<void> {
+  await api.put(`/books/admin/restrictions/${userId}`, body)
+}
+
 export async function listSeries(libraryId: string): Promise<Series[]> {
   const { data } = await api.get<{ series: Series[] }>('/books/series', {
     params: { library_id: libraryId },

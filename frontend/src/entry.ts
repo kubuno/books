@@ -12,6 +12,7 @@ import { BookOpen } from 'lucide-react'
 import './index.css'
 import './i18n'
 import BooksSidebar from './BooksSidebar'
+import { registerBooksAdmin } from './admin/BooksAdminPanel'
 
 export const sdkVersion = SDK_VERSION
 
@@ -32,6 +33,10 @@ export function register() {
 
   // The header gear button opens the per-user Books settings while in /books.
   ModuleSettingsRegistry.register('books')
+
+  // Instance administration (library management + default metadata language) in
+  // the core admin console under Modules ▸ Books.
+  registerBooksAdmin()
 
   // Routes (paths are relative to the host shell — no leading slash).
   const LibrariesPage = lazy(() => import('./pages/LibrariesPage'))

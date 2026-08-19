@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{errors::BooksError, middleware::auth::AuthUser, state::AppState};
+use crate::{errors::BooksError, middleware::auth::AuthUser, services::access, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct ProgressDto {
@@ -17,10 +17,11 @@ pub struct ProgressDto {
 }
 
 async fn book_visible(state: &AppState, user_id: Uuid, book_id: Uuid) -> Result<(), BooksError> {
-    sqlx::query_scalar::<_, Uuid>(
+    let readable = access::readable_book("$2", state.instance().block_unrated_sql());
+    sqlx::query_scalar::<_, Uuid>(&format!(
         "SELECT b.id FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE b.id = $1 AND (l.is_shared OR l.owner_id = $2)",
-    )
+         WHERE b.id = $1 AND {readable}"
+    ))
     .bind(book_id)
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -102,6 +103,9 @@ pub async fn mark_unread(
     Extension(user): Extension<AuthUser>,
     Path(book_id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
+    // The other progress routes check first; this one did not, which let a
+    // reader poke at rows for books they were never allowed to see.
+    book_visible(&state, user.id, book_id).await?;
     sqlx::query("DELETE FROM books.read_progress WHERE user_id = $1 AND book_id = $2")
         .bind(user.id)
         .bind(book_id)
@@ -136,17 +140,18 @@ pub async fn keep_reading(
     Query(q): Query<KeepQuery>,
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(24).clamp(1, 100);
-    let rows = sqlx::query_as::<_, KeepItem>(
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
+    let rows = sqlx::query_as::<_, KeepItem>(&format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.series_index, b.page_count, b.cover_format_id, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{}') AS formats, \
+                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats, \
                 rp.page AS progress_page, rp.updated_at AS progress_updated \
          FROM books.read_progress rp \
          JOIN books.books b ON b.id = rp.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE rp.user_id = $1 AND rp.completed = false AND (rp.page > 0 OR rp.location IS NOT NULL) \
-           AND (l.is_shared OR l.owner_id = $1) \
-         ORDER BY rp.updated_at DESC LIMIT $2",
-    )
+           AND {readable} \
+         ORDER BY rp.updated_at DESC LIMIT $2"
+    ))
     .bind(user.id)
     .bind(limit)
     .fetch_all(&state.db)
