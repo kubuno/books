@@ -14,9 +14,10 @@ use crate::{
     state::AppState,
 };
 
-// Access rule reused everywhere: a library is visible when shared or owned by the user, and
-// allowed by the user's per-account library restriction (P7).
-const VISIBLE: &str = "(l.is_shared OR l.owner_id = $1) AND books.lib_allowed($1, l.id)";
+// Access rules live in `services::access` so that every handler returning
+// content — not just the ones in this file — carries the same two predicates.
+// See that module for why the reader's placeholder is an argument.
+use crate::services::access;
 
 #[derive(Debug, Deserialize)]
 pub struct SeriesQuery {
@@ -28,9 +29,10 @@ pub async fn list_series(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<SeriesQuery>,
 ) -> Result<Json<Value>, BooksError> {
+    let readable = access::readable_series("$1", state.instance().block_unrated_sql());
     let rows = sqlx::query_as::<_, Series>(&format!(
         "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE {VISIBLE} AND ($2::uuid IS NULL OR s.library_id = $2) \
+         WHERE {readable} AND ($2::uuid IS NULL OR s.library_id = $2) \
          ORDER BY s.sort_name NULLS LAST, s.name"
     ))
     .bind(user.id)
@@ -45,9 +47,10 @@ pub async fn get_series(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
+    let readable = access::readable_series("$1", state.instance().block_unrated_sql());
     let row = sqlx::query_as::<_, Series>(&format!(
         "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE {VISIBLE} AND s.id = $2"
+         WHERE {readable} AND s.id = $2"
     ))
     .bind(user.id)
     .bind(id)
@@ -66,12 +69,13 @@ pub async fn series_books(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
     let rows = sqlx::query_as::<_, BookListItem>(&format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
                 b.page_count, b.cover_format_id, b.added_at, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {VISIBLE} AND books.age_ok($1, b.age_rating) AND b.series_id = $2 \
+         WHERE {readable} AND b.series_id = $2 \
          ORDER BY b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title"
     ))
     .bind(user.id)
@@ -113,11 +117,11 @@ pub async fn list_books(
         Some("updated") => "b.updated_at DESC",
         _ => "b.added_at DESC",
     };
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
     let rows = sqlx::query_as::<_, BookListItem>(&format!(
         "SELECT {BOOK_LIST_COLS} \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {VISIBLE} \
-           AND books.age_ok($1, b.age_rating) \
+         WHERE {readable} \
            AND ($2::uuid IS NULL OR b.library_id = $2) \
            AND ($3::uuid IS NULL OR b.series_id = $3) \
            AND ($4::text IS NULL OR b.title ILIKE '%' || $4 || '%') \
@@ -151,12 +155,13 @@ pub async fn recent_books(
     Query(q): Query<BooksQuery>,
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(24).clamp(1, 100);
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
     let rows = sqlx::query_as::<_, BookListItem>(&format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
                 b.page_count, b.cover_format_id, b.added_at, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {VISIBLE} AND books.age_ok($1, b.age_rating) ORDER BY b.added_at DESC LIMIT $2"
+         WHERE {readable} ORDER BY b.added_at DESC LIMIT $2"
     ))
     .bind(user.id)
     .bind(limit)
@@ -170,9 +175,10 @@ pub async fn get_book(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
     let book = sqlx::query_as::<_, Book>(&format!(
         "SELECT b.* FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {VISIBLE} AND books.age_ok($1, b.age_rating) AND b.id = $2"
+         WHERE {readable} AND b.id = $2"
     ))
     .bind(user.id)
     .bind(id)
@@ -626,16 +632,20 @@ pub async fn export_catalog(
     Query(q): Query<ExportQuery>,
 ) -> Result<axum::response::Response, BooksError> {
     use axum::{http::header, response::IntoResponse};
-    let rows = sqlx::query_as::<_, ExportRow>(
+    // An export is a listing like any other: it goes through the same two rules.
+    // It used to check library visibility alone, which made it the widest hole
+    // of the module — one request returned the entire catalogue as a file.
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
+    let rows = sqlx::query_as::<_, ExportRow>(&format!(
         "SELECT b.title, s.name AS series_name, b.series_index, b.authors, b.publisher, \
                 b.published_date, b.isbn, b.language, b.tags, b.rating, b.page_count, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{}') AS formats, \
+                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats, \
                 b.added_at \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          LEFT JOIN books.series s ON s.id = b.series_id \
-         WHERE (l.is_shared OR l.owner_id = $1) AND ($2::uuid IS NULL OR b.library_id = $2) \
-         ORDER BY s.name NULLS LAST, b.series_index NULLS LAST, b.title",
-    )
+         WHERE {readable} AND ($2::uuid IS NULL OR b.library_id = $2) \
+         ORDER BY s.name NULLS LAST, b.series_index NULLS LAST, b.title"
+    ))
     .bind(user.id)
     .bind(q.library_id)
     .fetch_all(&state.db)
@@ -684,15 +694,16 @@ pub async fn duplicates(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
-    let rows = sqlx::query_as::<_, (String, Value)>(
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
+    let rows = sqlx::query_as::<_, (String, Value)>(&format!(
         "SELECT bf.content_hash AS hash, \
                 jsonb_agg(DISTINCT jsonb_build_object('id', b.id, 'title', b.title)) AS books \
          FROM books.book_formats bf \
          JOIN books.books b ON b.id = bf.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE bf.content_hash IS NOT NULL AND (l.is_shared OR l.owner_id = $1) \
-         GROUP BY bf.content_hash HAVING count(DISTINCT b.id) > 1",
-    )
+         WHERE bf.content_hash IS NOT NULL AND {readable} \
+         GROUP BY bf.content_hash HAVING count(DISTINCT b.id) > 1"
+    ))
     .bind(user.id)
     .fetch_all(&state.db)
     .await?;

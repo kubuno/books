@@ -24,12 +24,13 @@ const TYPE_ICON: Record<LibraryType, typeof LibraryIcon> = {
 
 interface Props {
   library: Library
-  isAdmin: boolean
-  onConfirm: ReturnType<typeof useConfirm>['confirm']
+  /** When true, expose the edit/scan/delete menu (admin console only). */
+  isAdmin?: boolean
+  onConfirm?: ReturnType<typeof useConfirm>['confirm']
 }
 
-/** One library tile on the home page, with an admin context menu. */
-export default function LibraryCard({ library, isAdmin, onConfirm }: Props) {
+/** One library tile: a browse link, plus an admin context menu when `isAdmin`. */
+export default function LibraryCard({ library, isAdmin = false, onConfirm }: Props) {
   const { t } = useTranslation('books')
   const qc = useQueryClient()
   const menu = useMenuDropdown()
@@ -65,12 +66,14 @@ export default function LibraryCard({ library, isAdmin, onConfirm }: Props) {
   }
 
   async function remove() {
-    const ok = await onConfirm({
-      title: t('books_delete_title'),
-      message: t('books_delete_message', { name: library.name }),
-      confirmLabel: t('common_delete'),
-      variant: 'danger',
-    })
+    const ok = onConfirm
+      ? await onConfirm({
+          title: t('books_delete_title'),
+          message: t('books_delete_message', { name: library.name }),
+          confirmLabel: t('common_delete'),
+          variant: 'danger',
+        })
+      : false
     if (!ok) return
     setBusy(true)
     try {

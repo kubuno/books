@@ -1,25 +1,21 @@
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
-import { Button, ConfirmDialog } from '@ui'
-import { useAuthStore, useConfirm, useImageCacheStore } from '@kubuno/sdk'
-import { Library as LibraryIcon, Plus, Clock, BookOpen } from 'lucide-react'
+import { useImageCacheStore } from '@kubuno/sdk'
+import { Library as LibraryIcon, Clock, BookOpen } from 'lucide-react'
 import { listLibraries, recentBooks, keepReading, bookCoverUrl } from '../api'
 import LibraryCard from './LibraryCard'
 import CoverCard from '../components/CoverCard'
 import { Breadcrumb } from '../components/Breadcrumb'
-import LibrarySettingsDialog from '../components/LibrarySettingsDialog'
 import { CardGrid, LoadingState, EmptyState, PageHeader } from '../components/shared'
 
-/** Home page: library grid + a "recently added" rail. */
+/**
+ * Home page: read-only library grid + a "recently added" rail. Library
+ * management (create / edit / scan / delete) lives in the admin console
+ * (Modules ▸ Books), not here — this page only browses.
+ */
 export default function LibrariesPage() {
   const { t } = useTranslation('books')
-  const user = useAuthStore((s) => s.user)
-  const isAdmin = user?.role === 'admin'
-  const { confirm, confirmState, handleConfirm, handleCancel } = useConfirm()
   const cacheVer = useImageCacheStore((s) => s.global)
-
-  const [creating, setCreating] = useState(false)
 
   const { data: libraries, isLoading } = useQuery({
     queryKey: ['books', 'libraries'],
@@ -41,45 +37,20 @@ export default function LibrariesPage() {
       <div className="mb-4">
         <Breadcrumb crumbs={[{ label: t('libraries', { defaultValue: 'Bibliothèques' }) }]} />
       </div>
-      <PageHeader
-        title={t('books_title')}
-        subtitle={t('books_subtitle')}
-        actions={
-          isAdmin && (
-            <Button
-              variant="primary"
-              icon={<Plus className="h-4 w-4" />}
-              onClick={() => setCreating(true)}
-            >
-              {t('books_new_library')}
-            </Button>
-          )
-        }
-      />
+      <PageHeader title={t('books_title')} subtitle={t('books_subtitle')} />
 
       {isLoading ? (
         <LoadingState label={t('books_loading')} />
       ) : libraries && libraries.length > 0 ? (
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
           {libraries.map((lib) => (
-            <LibraryCard key={lib.id} library={lib} isAdmin={isAdmin} onConfirm={confirm} />
+            <LibraryCard key={lib.id} library={lib} />
           ))}
         </div>
       ) : (
         <EmptyState
           icon={<LibraryIcon className="h-10 w-10" />}
           message={t('books_empty_libraries')}
-          action={
-            isAdmin && (
-              <Button
-                variant="secondary"
-                icon={<Plus className="h-4 w-4" />}
-                onClick={() => setCreating(true)}
-              >
-                {t('books_new_library')}
-              </Button>
-            )
-          }
         />
       )}
 
@@ -128,12 +99,6 @@ export default function LibrariesPage() {
         </section>
       )}
 
-      {creating && (
-        <LibrarySettingsDialog mode="create" onClose={() => setCreating(false)} />
-      )}
-      {confirmState && (
-        <ConfirmDialog {...confirmState} onConfirm={handleConfirm} onCancel={handleCancel} />
-      )}
     </div>
   )
 }

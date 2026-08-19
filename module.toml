@@ -31,6 +31,73 @@ path     = "/books"
 position = 22
 section  = "main"
 
+# Admin console sub-menus (Modules ▸ Books). `id` is a stable, untranslated slug
+# used in the admin page URL.
+#
+# Two kinds of surface coexist here on purpose. Libraries and the default
+# metadata language need views of their own (a folder picker, a per-library
+# form), so they stay custom sections contributed through ModuleAdminRegistry
+# and edited through /books/admin/*. The access policy below is made of plain
+# switches, so it is DECLARED here and rendered by the core: it then shows up in
+# the console's search, in the inheritance chain and in the audit trail, none of
+# which a hand-written view gets.
+[[setting_groups]]
+id       = "libraries"
+label    = "Bibliothèques"
+icon     = "Library"
+position = 10
+
+[[setting_groups]]
+id       = "metadata"
+label    = "Métadonnées"
+icon     = "Tags"
+position = 20
+
+[[setting_groups]]
+id          = "access"
+label       = "Accès et restrictions"
+icon        = "ShieldCheck"
+position    = 30
+description = "Ce que les lecteurs peuvent emporter, les surfaces ouvertes vers l'extérieur, et le traitement des contenus non classés. Les restrictions par compte (bibliothèques autorisées, âge maximal) se règlent plus bas sur cette page."
+
+# ── Accès et restrictions ─────────────────────────────────────────────────────
+
+[[settings]]
+key     = "allow_downloads"
+scope   = "global"
+group   = "access"
+type    = "bool"
+default = true
+label   = "Téléchargement des fichiers"
+description = "Désactivé, la lecture dans le navigateur reste entière — seule la récupération du fichier d'origine est refusée, et le catalogue OPDS cesse d'annoncer des liens de téléchargement."
+
+[[settings]]
+key     = "opds_enabled"
+scope   = "global"
+group   = "access"
+type    = "bool"
+default = true
+label   = "Catalogue OPDS"
+description = "Flux consommé par les applications de lecture externes. Il n'a aucune page que l'on visite : s'il n'est pas utilisé, le fermer vaut mieux que de compter sur le fait que personne n'en connaît l'adresse."
+
+[[settings]]
+key     = "block_unrated"
+scope   = "global"
+group   = "access"
+type    = "bool"
+default = false
+label   = "Bloquer les contenus sans classification"
+description = "Un livre dont aucune classification d'âge n'est connue est masqué aux comptes soumis à un âge maximal, au lieu d'être laissé passer. Sans effet sur les comptes sans restriction d'âge."
+
+[[settings]]
+key     = "import_age_rating"
+scope   = "global"
+group   = "access"
+type    = "bool"
+default = true
+label   = "Lire la classification d'âge des fichiers"
+description = "Récupère la balise « AgeRating » des fichiers ComicInfo.xml à l'analyse. Sans elle, la quasi-totalité de la bibliothèque reste non classée et un âge maximal ne filtre rien. Ne remplace jamais une classification saisie à la main."
+
 [events]
 subscribed = [
     "UserDeleted",

@@ -13,6 +13,7 @@ use crate::{
     errors::BooksError,
     middleware::auth::AuthUser,
     models::content::{Book, Series},
+    services::access,
     state::AppState,
 };
 
@@ -74,11 +75,18 @@ pub async fn get_collection(
     .await?
     .ok_or_else(|| BooksError::NotFound("Collection".into()))?;
 
-    let series = sqlx::query_as::<_, Series>(
-        "SELECT s.* FROM books.collection_series cs JOIN books.series s ON s.id = cs.series_id \
-         WHERE cs.collection_id = $1 ORDER BY cs.position, s.name",
-    )
+    // Membership is not a permission: a collection may be public while some of
+    // the series it lists sit in a library this reader was never given. The
+    // join on `libraries` is what was missing.
+    let readable = access::readable_series("$2", state.instance().block_unrated_sql());
+    let series = sqlx::query_as::<_, Series>(&format!(
+        "SELECT s.* FROM books.collection_series cs \
+         JOIN books.series s ON s.id = cs.series_id \
+         JOIN books.libraries l ON l.id = s.library_id \
+         WHERE cs.collection_id = $1 AND {readable} ORDER BY cs.position, s.name"
+    ))
     .bind(id)
+    .bind(user.id)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(json!({ "collection": { "id": coll.0, "name": coll.1, "description": coll.2, "is_public": coll.3 }, "series": series })))
@@ -161,9 +169,13 @@ pub async fn get_read_list(
     let rl = sqlx::query_as::<_, (Uuid, String, Option<String>, bool)>(
         "SELECT id, name, description, is_public FROM books.read_lists WHERE id=$1 AND (is_public OR owner_id=$2)",
     ).bind(id).bind(user.id).fetch_optional(&state.db).await?.ok_or_else(|| BooksError::NotFound("Liste de lecture".into()))?;
-    let books = sqlx::query_as::<_, Book>(
-        "SELECT b.* FROM books.read_list_books rb JOIN books.books b ON b.id=rb.book_id WHERE rb.read_list_id=$1 ORDER BY rb.position",
-    ).bind(id).fetch_all(&state.db).await?;
+    let readable = access::readable_book("$2", state.instance().block_unrated_sql());
+    let books = sqlx::query_as::<_, Book>(&format!(
+        "SELECT b.* FROM books.read_list_books rb \
+         JOIN books.books b ON b.id = rb.book_id \
+         JOIN books.libraries l ON l.id = b.library_id \
+         WHERE rb.read_list_id = $1 AND {readable} ORDER BY rb.position"
+    )).bind(id).bind(user.id).fetch_all(&state.db).await?;
     Ok(Json(json!({ "read_list": {"id":rl.0,"name":rl.1,"description":rl.2,"is_public":rl.3}, "books": books })))
 }
 
@@ -233,31 +245,40 @@ pub async fn delete_saved_search(
 #[derive(Debug, sqlx::FromRow, serde::Serialize)]
 struct Facet { value: String, count: i64 }
 
+/// A facet that could not be computed comes back empty rather than failing the
+/// whole browser — but never silently: a swallowed error here reads, from the
+/// interface, exactly like "there is nothing tagged".
+fn facet_failed(e: sqlx::Error) -> Vec<Facet> {
+    tracing::error!(error = %e, "Calcul d'une facette books échoué");
+    Vec::new()
+}
+
 pub async fn facets(
     State(state): State<AppState>, Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
-    let tags = sqlx::query_as::<_, Facet>(
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
+    let tags = sqlx::query_as::<_, Facet>(&format!(
         "SELECT t AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id, LATERAL jsonb_array_elements_text(b.tags) t \
-         WHERE (l.is_shared OR l.owner_id = $1) GROUP BY t ORDER BY count DESC, value LIMIT 300",
-    ).bind(user.id).fetch_all(&state.db).await.unwrap_or_default();
-    let authors = sqlx::query_as::<_, Facet>(
+         WHERE {readable} GROUP BY t ORDER BY count DESC, value LIMIT 300"
+    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    let authors = sqlx::query_as::<_, Facet>(&format!(
         "SELECT a->>'name' AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id, LATERAL jsonb_array_elements(b.authors) a \
-         WHERE (l.is_shared OR l.owner_id = $1) AND a->>'name' IS NOT NULL \
-         GROUP BY a->>'name' ORDER BY count DESC, value LIMIT 300",
-    ).bind(user.id).fetch_all(&state.db).await.unwrap_or_default();
-    let publishers = sqlx::query_as::<_, Facet>(
+         WHERE {readable} AND a->>'name' IS NOT NULL \
+         GROUP BY a->>'name' ORDER BY count DESC, value LIMIT 300"
+    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    let publishers = sqlx::query_as::<_, Facet>(&format!(
         "SELECT b.publisher AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE (l.is_shared OR l.owner_id = $1) AND b.publisher IS NOT NULL \
-         GROUP BY b.publisher ORDER BY count DESC, value LIMIT 200",
-    ).bind(user.id).fetch_all(&state.db).await.unwrap_or_default();
-    let languages = sqlx::query_as::<_, Facet>(
+         WHERE {readable} AND b.publisher IS NOT NULL \
+         GROUP BY b.publisher ORDER BY count DESC, value LIMIT 200"
+    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    let languages = sqlx::query_as::<_, Facet>(&format!(
         "SELECT b.language AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE (l.is_shared OR l.owner_id = $1) AND b.language IS NOT NULL \
-         GROUP BY b.language ORDER BY count DESC, value LIMIT 100",
-    ).bind(user.id).fetch_all(&state.db).await.unwrap_or_default();
+         WHERE {readable} AND b.language IS NOT NULL \
+         GROUP BY b.language ORDER BY count DESC, value LIMIT 100"
+    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
     Ok(Json(json!({ "tags": tags, "authors": authors, "publishers": publishers, "languages": languages })))
 }

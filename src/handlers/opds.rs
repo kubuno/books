@@ -13,6 +13,7 @@ use crate::{
     errors::BooksError,
     middleware::auth::AuthUser,
     models::content::{BookListItem, Series},
+    services::access,
     state::AppState,
 };
 
@@ -20,6 +21,19 @@ const OPDS_CT: &str = "application/atom+xml; charset=utf-8";
 const NAV: &str = "application/atom+xml;profile=opds-catalog;kind=navigation";
 const ACQ: &str = "application/atom+xml;profile=opds-catalog;kind=acquisition";
 const BASE: &str = "/api/v1/books/opds";
+
+/// Instance policy gate, applied to every feed of this file.
+///
+/// OPDS hands out acquisition links to reading apps and has no page anybody
+/// browses, so "nobody knows the URL" is the only thing protecting an instance
+/// that never meant to publish it. This turns that into a decision.
+fn opds_open(state: &AppState) -> Result<(), BooksError> {
+    if state.instance().opds_enabled {
+        Ok(())
+    } else {
+        Err(BooksError::Forbidden)
+    }
+}
 
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
@@ -47,35 +61,48 @@ fn nav_entry(title: &str, content: &str, href: &str) -> String {
     )
 }
 
-fn book_entry(b: &BookListItem) -> String {
+/// One catalogue entry. The acquisition link is omitted entirely when downloads
+/// are off: an OPDS reader shown a link that answers 403 reports the library as
+/// broken, where an entry with no acquisition link is simply not downloadable —
+/// which is what the instance actually decided.
+fn book_entry(b: &BookListItem, allow_downloads: bool) -> String {
     let id = b.id;
     let download_type = match b.formats.first().map(|s| s.as_str()) {
         Some("pdf") => "application/pdf",
         Some("epub") => "application/epub+zip",
         _ => "application/zip",
     };
+    let acquisition = if allow_downloads {
+        format!(
+            "<link rel=\"http://opds-spec.org/acquisition\" href=\"/api/v1/books/books/{id}/download\" type=\"{download_type}\"/>"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "  <entry><id>urn:kubuno:book:{id}</id><title>{}</title>\
          <link rel=\"http://opds-spec.org/image\" href=\"/api/v1/books/books/{id}/cover\" type=\"image/jpeg\"/>\
          <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"/api/v1/books/books/{id}/cover\" type=\"image/jpeg\"/>\
-         <link rel=\"http://opds-spec.org/acquisition\" href=\"/api/v1/books/books/{id}/download\" type=\"{download_type}\"/>\
-         </entry>\n",
+         {acquisition}</entry>\n",
         esc(&b.title)
     )
 }
 
-pub async fn root(State(_s): State<AppState>, Extension(_u): Extension<AuthUser>) -> Response {
+pub async fn root(State(state): State<AppState>, Extension(_u): Extension<AuthUser>) -> Result<Response, BooksError> {
+    opds_open(&state)?;
     let mut body = String::new();
     body.push_str(&nav_entry("Séries", "Toutes les séries", &format!("{BASE}/series")));
     body.push_str(&nav_entry("Récents", "Livres ajoutés récemment", &format!("{BASE}/recent")));
-    feed(BASE, "Kubuno Books", &body)
+    Ok(feed(BASE, "Kubuno Books", &body))
 }
 
 pub async fn series_nav(State(state): State<AppState>, Extension(user): Extension<AuthUser>) -> Result<Response, BooksError> {
-    let rows = sqlx::query_as::<_, Series>(
+    opds_open(&state)?;
+    let readable = access::readable_series("$1", state.instance().block_unrated_sql());
+    let rows = sqlx::query_as::<_, Series>(&format!(
         "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE (l.is_shared OR l.owner_id = $1) ORDER BY s.sort_name NULLS LAST, s.name",
-    )
+         WHERE {readable} ORDER BY s.sort_name NULLS LAST, s.name"
+    ))
     .bind(user.id)
     .fetch_all(&state.db)
     .await?;
@@ -87,11 +114,12 @@ pub async fn series_nav(State(state): State<AppState>, Extension(user): Extensio
 }
 
 async fn books_query(state: &AppState, user_id: Uuid, extra: &str, bind_id: Option<Uuid>) -> Result<Vec<BookListItem>, BooksError> {
+    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
     let sql = format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, b.page_count, b.cover_format_id, b.added_at, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE (l.is_shared OR l.owner_id = $1) {extra}"
+         WHERE {readable} {extra}"
     );
     let mut q = sqlx::query_as::<_, BookListItem>(&sql).bind(user_id);
     if let Some(id) = bind_id {
@@ -101,10 +129,12 @@ async fn books_query(state: &AppState, user_id: Uuid, extra: &str, bind_id: Opti
 }
 
 pub async fn series_acq(State(state): State<AppState>, Extension(user): Extension<AuthUser>, Path(id): Path<Uuid>) -> Result<Response, BooksError> {
+    opds_open(&state)?;
+    let allow_downloads = state.instance().allow_downloads;
     let books = books_query(&state, user.id, "AND b.series_id = $2 ORDER BY b.series_index NULLS LAST, b.title", Some(id)).await?;
     let mut body = String::new();
     for b in &books {
-        body.push_str(&book_entry(b));
+        body.push_str(&book_entry(b, allow_downloads));
     }
     Ok(feed_acq(&format!("{BASE}/series/{id}"), "Série", &body))
 }
@@ -115,11 +145,13 @@ pub struct RecentQuery {
 }
 
 pub async fn recent_acq(State(state): State<AppState>, Extension(user): Extension<AuthUser>, Query(q): Query<RecentQuery>) -> Result<Response, BooksError> {
+    opds_open(&state)?;
+    let allow_downloads = state.instance().allow_downloads;
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let books = books_query(&state, user.id, &format!("ORDER BY b.added_at DESC LIMIT {limit}"), None).await?;
     let mut body = String::new();
     for b in &books {
-        body.push_str(&book_entry(b));
+        body.push_str(&book_entry(b, allow_downloads));
     }
     Ok(feed_acq(&format!("{BASE}/recent"), "Ajoutés récemment", &body))
 }

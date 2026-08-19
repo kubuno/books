@@ -67,6 +67,7 @@ pub fn build(state: AppState) -> Router {
         .route("/opds/recent",               get(opds::recent_acq))
         // Admin
         .route("/admin/settings",            get(admin::get_settings).patch(admin::patch_settings))
+        .route("/admin/restrictions",        get(admin::list_restrictions))
         .route("/admin/restrictions/:uid",   get(admin::get_restrictions).put(admin::set_restrictions))
         .layer(axum::middleware::from_fn_with_state(state.clone(), require_auth));
 

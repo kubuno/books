@@ -9,7 +9,12 @@ use axum::{
 use bytes::Bytes;
 use uuid::Uuid;
 
-use crate::{errors::BooksError, middleware::auth::AuthUser, services::decode, state::AppState};
+use crate::{
+    errors::BooksError,
+    middleware::auth::AuthUser,
+    services::{access, decode},
+    state::AppState,
+};
 
 struct Fmt {
     format:           String,
@@ -32,14 +37,20 @@ fn resolve_path(state: &AppState, fmt: &Fmt) -> Result<std::path::PathBuf, Books
 }
 
 /// Load a format's file if the requesting user may see its book.
+///
+/// This is the choke point of the whole reading surface — covers, page counts,
+/// page images and the raw stream all pass through it — which is why the full
+/// access rule belongs here and not only in the listings. The reader is bound at
+/// `$2`, hence the placeholder passed to `access`.
 async fn visible_format(state: &AppState, user_id: Uuid, format_id: Uuid) -> Result<Fmt, BooksError> {
-    sqlx::query_as::<_, (String, String, Option<String>, Uuid)>(
+    let readable = access::readable_book("$2", state.instance().block_unrated_sql());
+    sqlx::query_as::<_, (String, String, Option<String>, Uuid)>(&format!(
         "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id \
          FROM books.book_formats bf \
          JOIN books.books b ON b.id = bf.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE bf.id = $1 AND (l.is_shared OR l.owner_id = $2)",
-    )
+         WHERE bf.id = $1 AND {readable}"
+    ))
     .bind(format_id)
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -54,10 +65,21 @@ async fn cover_format_of(
     table: &str,
     id: Uuid,
 ) -> Result<Uuid, BooksError> {
+    // `table` is `books` or `series`, chosen by the caller from two literals.
+    // The rating a cover is judged on has to be the SAME one the listing used,
+    // or a series hidden from the list would still hand out its artwork to
+    // anybody who guessed the id — which is how a "hidden" shelf gets browsed.
+    let rating = if table == "series" {
+        access::series_effective_rating("t")
+    } else {
+        "t.age_rating".to_string()
+    };
+    let allowed = access::content_allowed("$2", &rating, state.instance().block_unrated_sql());
+    let visible = access::visible_library("$2");
     let sql = format!(
         "SELECT t.cover_format_id FROM books.{table} t \
          JOIN books.libraries l ON l.id = t.library_id \
-         WHERE t.id = $1 AND (l.is_shared OR l.owner_id = $2)"
+         WHERE t.id = $1 AND {visible} AND {allowed}"
     );
     sqlx::query_scalar::<_, Option<Uuid>>(&sql)
         .bind(id)
@@ -144,10 +166,11 @@ pub async fn series_cover(
 ) -> Result<Response, BooksError> {
     // A downloaded series artwork (from online enrichment) wins over a book-derived
     // cover — but only once we've confirmed the series is visible to the user.
-    let visible = sqlx::query_scalar::<_, bool>(
+    let readable = access::readable_series("$2", state.instance().block_unrated_sql());
+    let visible = sqlx::query_scalar::<_, bool>(&format!(
         "SELECT EXISTS(SELECT 1 FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE s.id = $1 AND (l.is_shared OR l.owner_id = $2))",
-    )
+         WHERE s.id = $1 AND {readable})"
+    ))
     .bind(id)
     .bind(user.id)
     .fetch_one(&state.db)
@@ -285,12 +308,21 @@ pub async fn book_download(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, BooksError> {
-    let (format, storage_path, local_cache_path, owner_id, file_name) = sqlx::query_as::<_, (String, String, Option<String>, Uuid, String)>(
+    // Instance policy: reading in the browser and taking the file away are two
+    // different permissions. Closing this one leaves the reader untouched — the
+    // page images keep being served — and only stops the file from leaving.
+    let inst = state.instance();
+    if !inst.allow_downloads {
+        return Err(BooksError::Forbidden);
+    }
+
+    let readable = access::readable_book("$2", inst.block_unrated_sql());
+    let (format, storage_path, local_cache_path, owner_id, file_name) = sqlx::query_as::<_, (String, String, Option<String>, Uuid, String)>(&format!(
         "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id, bf.file_name \
          FROM books.books b JOIN books.book_formats bf ON bf.id = b.cover_format_id \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE b.id = $1 AND (l.is_shared OR l.owner_id = $2)",
-    )
+         WHERE b.id = $1 AND {readable}"
+    ))
     .bind(id)
     .bind(user.id)
     .fetch_optional(&state.db)
