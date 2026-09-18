@@ -8,7 +8,7 @@ import {
   useSidebarStore,
   SDK_VERSION,
 } from '@kubuno/sdk'
-import { BookOpen } from 'lucide-react'
+import BooksLogo from './BooksLogo'
 import './index.css'
 import './i18n'
 import BooksSidebar from './BooksSidebar'
@@ -19,7 +19,7 @@ export const sdkVersion = SDK_VERSION
 export function register() {
   // App names are brands, never translated.
   WaffleAppRegistry.register('books', 'Books', [
-    { id: 'books', label: 'Books', Icon: BookOpen, path: '/books' },
+    { id: 'books', label: 'Books', Icon: BooksLogo, path: '/books' },
   ])
 
   useSidebarStore.getState().register({
@@ -29,7 +29,7 @@ export function register() {
     collapsedBody: true,
   })
 
-  FaviconRegistry.register('books', '/books-logo.svg')
+  FaviconRegistry.register('books', '/books-logo.png')
 
   // The header gear button opens the per-user Books settings while in /books.
   ModuleSettingsRegistry.register('books')

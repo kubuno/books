@@ -78,7 +78,7 @@ export default function BrowsePage() {
               key={key}
               type="button"
               onClick={() => setFilters({ ...filters, [key]: undefined })}
-              className="inline-flex items-center gap-1 rounded-full bg-primary-light px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20"
+              className="inline-flex items-center gap-1 rounded-md bg-primary-light px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20"
             >
               {value}
               <X className="h-3 w-3" />

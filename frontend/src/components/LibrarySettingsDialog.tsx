@@ -81,7 +81,7 @@ function ToggleChip({
     <button
       type="button"
       onClick={onClick}
-      className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition ${
+      className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition ${
         active
           ? 'border-primary bg-primary-light text-primary'
           : 'border-border bg-surface-0 text-text-secondary hover:border-border-strong'
