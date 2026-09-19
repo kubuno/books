@@ -11,6 +11,15 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Security
 
+- **7-zip reader replaced by its maintained successor.** Comic archives in the
+  CB7 format were read by a library whose repository has been deleted and which
+  will never be fixed (RUSTSEC-2026-0245 path traversal, RUSTSEC-2026-0246
+  unmaintained). It is replaced by the actively maintained fork, which carries
+  no advisory. Reading a CB7 page never wrote anything to disk here, so the
+  traversal was not reachable, but the library is gone and the whole dependency
+  with it. Listing the pages of a CB7 book is also much faster now: the page
+  names are read from the archive index instead of decompressing every page.
+
 - **PDF reader updated to a patched release.** It could be made to overflow the
   stack by deeply nested objects (RUSTSEC-2026-0187), and it reads files that
   users upload.

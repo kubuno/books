@@ -41,7 +41,7 @@ walkdir     = "2"
 zip         = { version = "2", default-features = false, features = ["deflate", "bzip2", "deflate64"] }
 image       = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 natord      = "1"
-sevenz-rust = "0.6"   # CB7 (7-zip archives of images)
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["bzip2", "ppmd", "deflate"] }  # CB7 (7-zip archives of images)
 unrar       = "0.5"   # CBR (RAR archives — links libunrar, no exec)
 roxmltree   = "0.20"  # EPUB OPF parsing (cover + metadata)
 lopdf       = { version = "0.42", default-features = false }  # PDF page count

@@ -127,41 +127,29 @@ pub fn read_page(format: &str, path: &Path, entry: &str) -> Result<(Vec<u8>, Str
 
 // ── CB7 (7-zip archives) ─────────────────────────────────────────────────────────
 fn list_pages_7z(path: &Path) -> Result<Vec<String>, BooksError> {
-    let mut names = Vec::new();
-    let mut reader = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
+    let reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
         .map_err(|e| BooksError::Storage(e.to_string()))?;
-    reader
-        .for_each_entries(|entry, _r| {
-            if !entry.is_directory && is_image_name(&entry.name) {
-                names.push(entry.name.clone());
-            }
-            Ok(true)
-        })
-        .map_err(|e| BooksError::Storage(e.to_string()))?;
+    let mut names: Vec<String> = reader
+        .archive()
+        .files
+        .iter()
+        .filter(|entry| !entry.is_directory && is_image_name(&entry.name))
+        .map(|entry| entry.name.clone())
+        .collect();
     natsort(&mut names);
     Ok(names)
 }
 
 fn read_entry_7z(path: &Path, entry: &str) -> Result<(Vec<u8>, String), BooksError> {
-    let mut out: Option<Vec<u8>> = None;
-    let mut reader = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
+    let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
         .map_err(|e| BooksError::Storage(e.to_string()))?;
-    // 7z archives are typically solid: each entry's stream must be consumed in order to advance
-    // the decompressor, so we read every entry and keep the one we want.
-    reader
-        .for_each_entries(|e, r| {
-            if !e.is_directory {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(r, &mut buf);
-                if e.name == entry {
-                    out = Some(buf);
-                }
-            }
-            Ok(true)
-        })
-        .map_err(|e| BooksError::Storage(e.to_string()))?;
-    out.map(|b| (b, content_type_for(entry)))
-        .ok_or_else(|| BooksError::NotFound(format!("Entrée {entry}")))
+    // 7z archives are typically solid: the entries preceding the wanted one must still be decoded
+    // to advance the decompressor, which `read_file` handles internally (it stops at our entry).
+    let data = reader.read_file(entry).map_err(|e| match e {
+        sevenz_rust2::Error::FileNotFound => BooksError::NotFound(format!("Entrée {entry}")),
+        other => BooksError::Storage(other.to_string()),
+    })?;
+    Ok((data, content_type_for(entry)))
 }
 
 // ── CBR (RAR archives) ───────────────────────────────────────────────────────────
