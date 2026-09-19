@@ -44,13 +44,16 @@ fn resolve_path(state: &AppState, fmt: &Fmt) -> Result<std::path::PathBuf, Books
 /// `$2`, hence the placeholder passed to `access`.
 async fn visible_format(state: &AppState, user_id: Uuid, format_id: Uuid) -> Result<Fmt, BooksError> {
     let readable = access::readable_book("$2", state.instance().block_unrated_sql());
-    sqlx::query_as::<_, (String, String, Option<String>, Uuid)>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    sqlx::query_as::<_, (String, String, Option<String>, Uuid)>(sqlx::AssertSqlSafe(format!(
         "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id \
          FROM books.book_formats bf \
          JOIN books.books b ON b.id = bf.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE bf.id = $1 AND {readable}"
-    ))
+    )))
     .bind(format_id)
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -62,7 +65,7 @@ async fn visible_format(state: &AppState, user_id: Uuid, format_id: Uuid) -> Res
 async fn cover_format_of(
     state: &AppState,
     user_id: Uuid,
-    table: &str,
+    table: &'static str,
     id: Uuid,
 ) -> Result<Uuid, BooksError> {
     // `table` is `books` or `series`, chosen by the caller from two literals.
@@ -76,12 +79,15 @@ async fn cover_format_of(
     };
     let allowed = access::content_allowed("$2", &rating, state.instance().block_unrated_sql());
     let visible = access::visible_library("$2");
+    // Audited: `table` is `&'static str` — the four call sites pass the literals
+    // "books" and "series" — and both predicates come from `services::access`,
+    // which splices `&'static str` only. The id and the reader stay bound.
     let sql = format!(
         "SELECT t.cover_format_id FROM books.{table} t \
          JOIN books.libraries l ON l.id = t.library_id \
          WHERE t.id = $1 AND {visible} AND {allowed}"
     );
-    sqlx::query_scalar::<_, Option<Uuid>>(&sql)
+    sqlx::query_scalar::<_, Option<Uuid>>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .bind(user_id)
         .fetch_optional(&state.db)
@@ -167,10 +173,13 @@ pub async fn series_cover(
     // A downloaded series artwork (from online enrichment) wins over a book-derived
     // cover — but only once we've confirmed the series is visible to the user.
     let readable = access::readable_series("$2", state.instance().block_unrated_sql());
-    let visible = sqlx::query_scalar::<_, bool>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let visible = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(format!(
         "SELECT EXISTS(SELECT 1 FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
          WHERE s.id = $1 AND {readable})"
-    ))
+    )))
     .bind(id)
     .bind(user.id)
     .fetch_one(&state.db)
@@ -317,12 +326,15 @@ pub async fn book_download(
     }
 
     let readable = access::readable_book("$2", inst.block_unrated_sql());
-    let (format, storage_path, local_cache_path, owner_id, file_name) = sqlx::query_as::<_, (String, String, Option<String>, Uuid, String)>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let (format, storage_path, local_cache_path, owner_id, file_name) = sqlx::query_as::<_, (String, String, Option<String>, Uuid, String)>(sqlx::AssertSqlSafe(format!(
         "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id, bf.file_name \
          FROM books.books b JOIN books.book_formats bf ON bf.id = b.cover_format_id \
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE b.id = $1 AND {readable}"
-    ))
+    )))
     .bind(id)
     .bind(user.id)
     .fetch_optional(&state.db)

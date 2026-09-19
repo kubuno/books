@@ -15,6 +15,31 @@ const BOOK_EXTS: &[&str] = &["cbz", "cbr", "cb7", "pdf", "epub"];
 /// Cover/primary format preference (image-based first).
 const FORMAT_PRIORITY: &[&str] = &["cbz", "cb7", "cbr", "pdf", "epub"];
 
+/// Picks each series' cover from the first or the last of its books.
+///
+/// The ORDER BY is the only thing that differs between the two, so it is taken
+/// as a literal and `concat!`-ed in: both arms are whole string literals fixed
+/// at compile time, which keeps this statement out of the dynamic-SQL audit.
+macro_rules! series_cover_sql {
+    ($order:literal) => {
+        concat!(
+            "UPDATE books.series s SET cover_format_id = ( \
+               SELECT b.cover_format_id FROM books.books b \
+               WHERE b.series_id = s.id AND b.cover_format_id IS NOT NULL \
+               ORDER BY ",
+            $order,
+            " LIMIT 1) \
+             WHERE s.library_id = $1"
+        )
+    };
+}
+
+/// The two orderings `series_cover_sql!` is instantiated with.
+const SERIES_COVER_LAST_SQL: &str =
+    series_cover_sql!("b.series_index DESC NULLS LAST, b.sort_title DESC NULLS LAST, b.title DESC");
+const SERIES_COVER_FIRST_SQL: &str =
+    series_cover_sql!("b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title");
+
 /// Instance-wide default metadata language (`books.settings.metadata_language`,
 /// set by an admin). Used only when a library leaves its own `metadata_language`
 /// blank, so a fresh library inherits the instance default instead of guessing.
@@ -349,21 +374,11 @@ async fn run_scan(state: &AppState, library_id: Uuid) -> Result<(), BooksError> 
     .execute(&mut *tx)
     .await?;
 
-    let cover_order = if cover_last {
-        "b.series_index DESC NULLS LAST, b.sort_title DESC NULLS LAST, b.title DESC"
-    } else {
-        "b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title"
-    };
-    sqlx::query(&format!(
-        "UPDATE books.series s SET cover_format_id = ( \
-           SELECT b.cover_format_id FROM books.books b \
-           WHERE b.series_id = s.id AND b.cover_format_id IS NOT NULL \
-           ORDER BY {cover_order} LIMIT 1) \
-         WHERE s.library_id = $1"
-    ))
-    .bind(library_id)
-    .execute(&mut *tx)
-    .await?;
+    let cover_sql = if cover_last { SERIES_COVER_LAST_SQL } else { SERIES_COVER_FIRST_SQL };
+    sqlx::query(cover_sql)
+        .bind(library_id)
+        .execute(&mut *tx)
+        .await?;
 
     sqlx::query(
         "UPDATE books.libraries \
@@ -791,21 +806,11 @@ async fn scan_remote_library(state: &AppState, library_id: Uuid, lib: &LibRow) -
     .execute(&mut *tx)
     .await?;
 
-    let cover_order = if cover_last {
-        "b.series_index DESC NULLS LAST, b.sort_title DESC NULLS LAST, b.title DESC"
-    } else {
-        "b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title"
-    };
-    sqlx::query(&format!(
-        "UPDATE books.series s SET cover_format_id = ( \
-           SELECT b.cover_format_id FROM books.books b \
-           WHERE b.series_id = s.id AND b.cover_format_id IS NOT NULL \
-           ORDER BY {cover_order} LIMIT 1) \
-         WHERE s.library_id = $1"
-    ))
-    .bind(library_id)
-    .execute(&mut *tx)
-    .await?;
+    let cover_sql = if cover_last { SERIES_COVER_LAST_SQL } else { SERIES_COVER_FIRST_SQL };
+    sqlx::query(cover_sql)
+        .bind(library_id)
+        .execute(&mut *tx)
+        .await?;
 
     sqlx::query(
         "UPDATE books.libraries \

@@ -17,21 +17,66 @@ use crate::{
 /// Valid library types for the books module.
 const LIB_TYPES: &[&str] = &["books", "comics", "ebooks"];
 
-const LIBRARY_COLUMNS: &str = r#"id, owner_id, name, lib_type, path, icon, color,
+/// The column list every library row is returned with.
+///
+/// A macro rather than a `const` so that callers can `concat!` it into a query
+/// that is a single string literal: a query assembled at compile time carries no
+/// run-time text at all, which is what keeps these statements out of the
+/// dynamic-SQL audit entirely.
+macro_rules! library_columns {
+    () => {
+        r#"id, owner_id, name, lib_type, path, icon, color,
     is_shared, item_count, last_scan_at, scan_status, scan_error,
     source_type, files_folder_id, files_owner_id,
     remote_mount_id, remote_mount_path, remote_owner_id,
-    settings, created_at, updated_at"#;
+    settings, created_at, updated_at"#
+    };
+}
+
+const LIST_LIBRARIES_SQL: &str = concat!(
+    "SELECT ", library_columns!(), " FROM books.libraries \
+     WHERE (is_shared = TRUE OR owner_id = $1) AND books.lib_allowed($1, id) ORDER BY name"
+);
+
+const INSERT_REMOTE_MOUNT_SQL: &str = concat!(
+    "INSERT INTO books.libraries \
+     (owner_id, name, lib_type, path, icon, color, is_shared, \
+      source_type, remote_mount_id, remote_mount_path, remote_owner_id, settings) \
+     VALUES ($1,$2,$3,'',$4,$5,$6,'remote_mount',$7,$8,$1,$9) \
+     RETURNING ", library_columns!()
+);
+
+const INSERT_FILES_FOLDER_SQL: &str = concat!(
+    "INSERT INTO books.libraries \
+     (owner_id, name, lib_type, path, icon, color, is_shared, \
+      source_type, files_folder_id, files_owner_id, settings) \
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'files_folder',$8,$9,$10) \
+     RETURNING ", library_columns!()
+);
+
+const INSERT_FILESYSTEM_SQL: &str = concat!(
+    "INSERT INTO books.libraries (owner_id, name, lib_type, path, icon, color, is_shared, settings) \
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
+     RETURNING ", library_columns!()
+);
+
+const UPDATE_LIBRARY_SQL: &str = concat!(
+    "UPDATE books.libraries \
+     SET name      = COALESCE($2, name), \
+         path      = COALESCE($3, path), \
+         icon      = COALESCE($4, icon), \
+         color     = COALESCE($5, color), \
+         is_shared = COALESCE($6, is_shared), \
+         settings  = COALESCE($7, settings) \
+     WHERE id = $1 \
+     RETURNING ", library_columns!()
+);
 
 pub async fn list_libraries(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
-    let sql = format!(
-        "SELECT {LIBRARY_COLUMNS} FROM books.libraries \
-         WHERE (is_shared = TRUE OR owner_id = $1) AND books.lib_allowed($1, id) ORDER BY name"
-    );
-    let rows = sqlx::query_as::<_, BookLibrary>(&sql)
+    let rows = sqlx::query_as::<_, BookLibrary>(LIST_LIBRARIES_SQL)
         .bind(user.id)
         .fetch_all(&state.db)
         .await?;
@@ -60,14 +105,7 @@ pub async fn create_library(
             .to_string();
         let mount_path = dto.remote_mount_path.as_deref().unwrap_or("").to_string();
 
-        let sql = format!(
-            "INSERT INTO books.libraries \
-             (owner_id, name, lib_type, path, icon, color, is_shared, \
-              source_type, remote_mount_id, remote_mount_path, remote_owner_id, settings) \
-             VALUES ($1,$2,$3,'',$4,$5,$6,'remote_mount',$7,$8,$1,$9) \
-             RETURNING {LIBRARY_COLUMNS}"
-        );
-        sqlx::query_as::<_, BookLibrary>(&sql)
+        sqlx::query_as::<_, BookLibrary>(INSERT_REMOTE_MOUNT_SQL)
             .bind(user.id)
             .bind(&dto.name)
             .bind(&dto.lib_type)
@@ -109,14 +147,7 @@ pub async fn create_library(
         let rel = user_folder_dir(owner_id, &folder_path);
         let resolved = format!("{}/{}", base.trim_end_matches('/'), rel.to_string_lossy());
 
-        let sql = format!(
-            "INSERT INTO books.libraries \
-             (owner_id, name, lib_type, path, icon, color, is_shared, \
-              source_type, files_folder_id, files_owner_id, settings) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,'files_folder',$8,$9,$10) \
-             RETURNING {LIBRARY_COLUMNS}"
-        );
-        sqlx::query_as::<_, BookLibrary>(&sql)
+        sqlx::query_as::<_, BookLibrary>(INSERT_FILES_FOLDER_SQL)
             .bind(user.id)
             .bind(&dto.name)
             .bind(&dto.lib_type)
@@ -134,12 +165,7 @@ pub async fn create_library(
             .filter(|p| !p.is_empty())
             .ok_or_else(|| BooksError::Validation("path requis pour source filesystem".into()))?;
 
-        let sql = format!(
-            "INSERT INTO books.libraries (owner_id, name, lib_type, path, icon, color, is_shared, settings) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
-             RETURNING {LIBRARY_COLUMNS}"
-        );
-        sqlx::query_as::<_, BookLibrary>(&sql)
+        sqlx::query_as::<_, BookLibrary>(INSERT_FILESYSTEM_SQL)
             .bind(user.id)
             .bind(&dto.name)
             .bind(&dto.lib_type)
@@ -164,18 +190,7 @@ pub async fn update_library(
     if user.role != "admin" {
         return Err(BooksError::Forbidden);
     }
-    let sql = format!(
-        "UPDATE books.libraries \
-         SET name      = COALESCE($2, name), \
-             path      = COALESCE($3, path), \
-             icon      = COALESCE($4, icon), \
-             color     = COALESCE($5, color), \
-             is_shared = COALESCE($6, is_shared), \
-             settings  = COALESCE($7, settings) \
-         WHERE id = $1 \
-         RETURNING {LIBRARY_COLUMNS}"
-    );
-    let row = sqlx::query_as::<_, BookLibrary>(&sql)
+    let row = sqlx::query_as::<_, BookLibrary>(UPDATE_LIBRARY_SQL)
         .bind(id)
         .bind(dto.name)
         .bind(dto.path)

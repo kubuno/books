@@ -99,10 +99,13 @@ pub async fn root(State(state): State<AppState>, Extension(_u): Extension<AuthUs
 pub async fn series_nav(State(state): State<AppState>, Extension(user): Extension<AuthUser>) -> Result<Response, BooksError> {
     opds_open(&state)?;
     let readable = access::readable_series("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, Series>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
         "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
          WHERE {readable} ORDER BY s.sort_name NULLS LAST, s.name"
-    ))
+    )))
     .bind(user.id)
     .fetch_all(&state.db)
     .await?;
@@ -113,17 +116,36 @@ pub async fn series_nav(State(state): State<AppState>, Extension(user): Extensio
     Ok(feed(&format!("{BASE}/series"), "Séries", &body))
 }
 
-async fn books_query(state: &AppState, user_id: Uuid, extra: &str, bind_id: Option<Uuid>) -> Result<Vec<BookListItem>, BooksError> {
+/// The shared body of both acquisition feeds.
+///
+/// `extra` is the tail of the WHERE/ORDER BY clause. It is `&'static str` on
+/// purpose: the recent feed used to build it with `format!()` around the `?limit`
+/// of the URL, which put a request value into the query TEXT. The limit is now
+/// bound like any other value, and the type makes the old shape impossible to
+/// write again. Whichever of `bind_id`/`bind_limit` a caller supplies lands on
+/// `$2`; no caller passes both.
+async fn books_query(
+    state: &AppState,
+    user_id: Uuid,
+    extra: &'static str,
+    bind_id: Option<Uuid>,
+    bind_limit: Option<i64>,
+) -> Result<Vec<BookListItem>, BooksError> {
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let sql = format!(
+    // Audited: the only text spliced in is the access predicate (built by
+    // `services::access` from `&'static str` alone) and a `&'static str` tail.
+    let sql = sqlx::AssertSqlSafe(format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, b.page_count, b.cover_format_id, b.added_at, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} {extra}"
-    );
-    let mut q = sqlx::query_as::<_, BookListItem>(&sql).bind(user_id);
+    ));
+    let mut q = sqlx::query_as::<_, BookListItem>(sql).bind(user_id);
     if let Some(id) = bind_id {
         q = q.bind(id);
+    }
+    if let Some(limit) = bind_limit {
+        q = q.bind(limit);
     }
     Ok(q.fetch_all(&state.db).await?)
 }
@@ -131,7 +153,7 @@ async fn books_query(state: &AppState, user_id: Uuid, extra: &str, bind_id: Opti
 pub async fn series_acq(State(state): State<AppState>, Extension(user): Extension<AuthUser>, Path(id): Path<Uuid>) -> Result<Response, BooksError> {
     opds_open(&state)?;
     let allow_downloads = state.instance().allow_downloads;
-    let books = books_query(&state, user.id, "AND b.series_id = $2 ORDER BY b.series_index NULLS LAST, b.title", Some(id)).await?;
+    let books = books_query(&state, user.id, "AND b.series_id = $2 ORDER BY b.series_index NULLS LAST, b.title", Some(id), None).await?;
     let mut body = String::new();
     for b in &books {
         body.push_str(&book_entry(b, allow_downloads));
@@ -148,7 +170,7 @@ pub async fn recent_acq(State(state): State<AppState>, Extension(user): Extensio
     opds_open(&state)?;
     let allow_downloads = state.instance().allow_downloads;
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
-    let books = books_query(&state, user.id, &format!("ORDER BY b.added_at DESC LIMIT {limit}"), None).await?;
+    let books = books_query(&state, user.id, "ORDER BY b.added_at DESC LIMIT $2", None, Some(limit)).await?;
     let mut body = String::new();
     for b in &books {
         body.push_str(&book_entry(b, allow_downloads));

@@ -18,10 +18,13 @@ pub struct ProgressDto {
 
 async fn book_visible(state: &AppState, user_id: Uuid, book_id: Uuid) -> Result<(), BooksError> {
     let readable = access::readable_book("$2", state.instance().block_unrated_sql());
-    sqlx::query_scalar::<_, Uuid>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    sqlx::query_scalar::<_, Uuid>(sqlx::AssertSqlSafe(format!(
         "SELECT b.id FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          WHERE b.id = $1 AND {readable}"
-    ))
+    )))
     .bind(book_id)
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -141,7 +144,10 @@ pub async fn keep_reading(
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(24).clamp(1, 100);
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, KeepItem>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, KeepItem>(sqlx::AssertSqlSafe(format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.series_index, b.page_count, b.cover_format_id, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats, \
                 rp.page AS progress_page, rp.updated_at AS progress_updated \
@@ -151,7 +157,7 @@ pub async fn keep_reading(
          WHERE rp.user_id = $1 AND rp.completed = false AND (rp.page > 0 OR rp.location IS NOT NULL) \
            AND {readable} \
          ORDER BY rp.updated_at DESC LIMIT $2"
-    ))
+    )))
     .bind(user.id)
     .bind(limit)
     .fetch_all(&state.db)

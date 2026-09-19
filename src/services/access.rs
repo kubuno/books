@@ -23,13 +23,19 @@
 //! two keywords by [`crate::config::instance::InstanceConfig::block_unrated_sql`].
 //! The module assembles all of its SQL this way; the values themselves stay
 //! bound.
+//!
+//! Every spliced argument is typed `&'static str`, so the compiler — not a
+//! reviewer — is what rejects a fragment that came from a request. The one
+//! exception is `content_allowed`'s `col`, which also accepts the output of
+//! [`series_effective_rating`]; that function is itself `&'static str`-only, so
+//! the whole fragment still bottoms out in literals.
 
 /// A library is visible when it is shared or owned by the reader, AND the
 /// reader's per-account library restriction allows it.
 ///
 /// `user` is the placeholder the reader's id is bound to in the caller's query
 /// (`"$1"`, `"$2"`…). The library table must be aliased `l`.
-pub fn visible_library(user: &str) -> String {
+pub fn visible_library(user: &'static str) -> String {
     format!("(l.is_shared OR l.owner_id = {user}) AND books.lib_allowed({user}, l.id)")
 }
 
@@ -37,12 +43,12 @@ pub fn visible_library(user: &str) -> String {
 ///
 /// `col` is the qualified age column (`"b.age_rating"`, `"s.age_rating"`).
 /// `block_unrated` is `"TRUE"` or `"FALSE"` — see the module docs above.
-pub fn content_allowed(user: &str, col: &str, block_unrated: &str) -> String {
+pub fn content_allowed(user: &'static str, col: &str, block_unrated: &'static str) -> String {
     format!("books.content_ok({user}, {col}, {block_unrated})")
 }
 
 /// Both rules at once, for the common case of listing books.
-pub fn readable_book(user: &str, block_unrated: &str) -> String {
+pub fn readable_book(user: &'static str, block_unrated: &'static str) -> String {
     format!(
         "{} AND {}",
         visible_library(user),
@@ -65,7 +71,7 @@ pub fn readable_book(user: &str, block_unrated: &str) -> String {
 /// `alias` is how the series table is named in the caller's query — `s` in the
 /// listings, `t` in the generic cover lookup, which is exactly why this takes an
 /// argument rather than hard-coding one.
-pub fn series_effective_rating(alias: &str) -> String {
+pub fn series_effective_rating(alias: &'static str) -> String {
     format!(
         "COALESCE({alias}.age_rating, \
          (SELECT max(sb.age_rating) FROM books.books sb WHERE sb.series_id = {alias}.id))"
@@ -73,7 +79,7 @@ pub fn series_effective_rating(alias: &str) -> String {
 }
 
 /// Both rules at once, for listing series.
-pub fn readable_series(user: &str, block_unrated: &str) -> String {
+pub fn readable_series(user: &'static str, block_unrated: &'static str) -> String {
     format!(
         "{} AND {}",
         visible_library(user),

@@ -30,11 +30,14 @@ pub async fn list_series(
     Query(q): Query<SeriesQuery>,
 ) -> Result<Json<Value>, BooksError> {
     let readable = access::readable_series("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, Series>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
         "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
          WHERE {readable} AND ($2::uuid IS NULL OR s.library_id = $2) \
          ORDER BY s.sort_name NULLS LAST, s.name"
-    ))
+    )))
     .bind(user.id)
     .bind(q.library_id)
     .fetch_all(&state.db)
@@ -48,10 +51,13 @@ pub async fn get_series(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
     let readable = access::readable_series("$1", state.instance().block_unrated_sql());
-    let row = sqlx::query_as::<_, Series>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let row = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
         "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
          WHERE {readable} AND s.id = $2"
-    ))
+    )))
     .bind(user.id)
     .bind(id)
     .fetch_optional(&state.db)
@@ -70,14 +76,17 @@ pub async fn series_books(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, BookListItem>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, BookListItem>(sqlx::AssertSqlSafe(format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
                 b.page_count, b.cover_format_id, b.added_at, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} AND b.series_id = $2 \
          ORDER BY b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title"
-    ))
+    )))
     .bind(user.id)
     .bind(id)
     .fetch_all(&state.db)
@@ -118,7 +127,10 @@ pub async fn list_books(
         _ => "b.added_at DESC",
     };
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, BookListItem>(&format!(
+    // Audited: three spliced fragments, none of them run-time data — the column
+    // list is a `const`, `sort` is one of four literals chosen by the match
+    // above, and the access predicate comes from `&'static str` arguments.
+    let rows = sqlx::query_as::<_, BookListItem>(sqlx::AssertSqlSafe(format!(
         "SELECT {BOOK_LIST_COLS} \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} \
@@ -132,7 +144,7 @@ pub async fn list_books(
            AND ($9::text IS NULL OR EXISTS (SELECT 1 FROM books.book_formats f WHERE f.book_id = b.id AND f.format = $9)) \
          ORDER BY {sort} \
          LIMIT $10 OFFSET $11"
-    ))
+    )))
     .bind(user.id)
     .bind(q.library_id)
     .bind(q.series_id)
@@ -156,13 +168,16 @@ pub async fn recent_books(
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(24).clamp(1, 100);
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, BookListItem>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, BookListItem>(sqlx::AssertSqlSafe(format!(
         "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
                 b.page_count, b.cover_format_id, b.added_at, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} ORDER BY b.added_at DESC LIMIT $2"
-    ))
+    )))
     .bind(user.id)
     .bind(limit)
     .fetch_all(&state.db)
@@ -176,10 +191,13 @@ pub async fn get_book(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let book = sqlx::query_as::<_, Book>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let book = sqlx::query_as::<_, Book>(sqlx::AssertSqlSafe(format!(
         "SELECT b.* FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} AND b.id = $2"
-    ))
+    )))
     .bind(user.id)
     .bind(id)
     .fetch_optional(&state.db)
@@ -234,7 +252,14 @@ pub struct UpdateBookDto {
     pub identifiers:       Option<Value>,
 }
 
-const BOOK_UPDATE_SET: &str = "\
+/// The assignment list shared by the single-book and the bulk update.
+///
+/// A macro rather than a `const` so that both statements can `concat!` it into
+/// one string literal: the query text is then fixed at compile time and needs no
+/// run-time audit, while the edited values stay bound.
+macro_rules! book_update_set {
+    () => {
+        "\
     title             = COALESCE($2, title), \
     sort_title        = COALESCE($3, sort_title), \
     series_index      = COALESCE($4, series_index), \
@@ -249,7 +274,15 @@ const BOOK_UPDATE_SET: &str = "\
     authors           = COALESCE($13, authors), \
     tags              = COALESCE($14, tags), \
     identifiers       = COALESCE($15, identifiers), \
-    updated_at = now()";
+    updated_at = now()"
+    };
+}
+
+const UPDATE_BOOK_SQL: &str =
+    concat!("UPDATE books.books SET ", book_update_set!(), " WHERE id = $1 RETURNING id");
+
+const BULK_UPDATE_BOOKS_SQL: &str =
+    concat!("UPDATE books.books SET ", book_update_set!(), " WHERE id = ANY($1)");
 
 fn bind_book_update<'q>(
     q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
@@ -280,8 +313,7 @@ pub async fn update_book(
     if user.role != "admin" {
         return Err(BooksError::Forbidden);
     }
-    let sql = format!("UPDATE books.books SET {BOOK_UPDATE_SET} WHERE id = $1 RETURNING id");
-    let updated = bind_book_update(sqlx::query(&sql).bind(id), &dto)
+    let updated = bind_book_update(sqlx::query(UPDATE_BOOK_SQL).bind(id), &dto)
         .fetch_optional(&state.db)
         .await?;
     if updated.is_none() {
@@ -308,8 +340,7 @@ pub async fn bulk_update_books(
     if dto.ids.is_empty() {
         return Ok(Json(json!({ "updated": 0 })));
     }
-    let sql = format!("UPDATE books.books SET {BOOK_UPDATE_SET} WHERE id = ANY($1)");
-    let n = bind_book_update(sqlx::query(&sql).bind(&dto.ids), &dto.fields)
+    let n = bind_book_update(sqlx::query(BULK_UPDATE_BOOKS_SQL).bind(&dto.ids), &dto.fields)
         .execute(&state.db)
         .await?
         .rows_affected();
@@ -636,7 +667,10 @@ pub async fn export_catalog(
     // It used to check library visibility alone, which made it the widest hole
     // of the module — one request returned the entire catalogue as a file.
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, ExportRow>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, ExportRow>(sqlx::AssertSqlSafe(format!(
         "SELECT b.title, s.name AS series_name, b.series_index, b.authors, b.publisher, \
                 b.published_date, b.isbn, b.language, b.tags, b.rating, b.page_count, \
                 COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats, \
@@ -645,7 +679,7 @@ pub async fn export_catalog(
          LEFT JOIN books.series s ON s.id = b.series_id \
          WHERE {readable} AND ($2::uuid IS NULL OR b.library_id = $2) \
          ORDER BY s.name NULLS LAST, b.series_index NULLS LAST, b.title"
-    ))
+    )))
     .bind(user.id)
     .bind(q.library_id)
     .fetch_all(&state.db)
@@ -695,7 +729,10 @@ pub async fn duplicates(
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let rows = sqlx::query_as::<_, (String, Value)>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let rows = sqlx::query_as::<_, (String, Value)>(sqlx::AssertSqlSafe(format!(
         "SELECT bf.content_hash AS hash, \
                 jsonb_agg(DISTINCT jsonb_build_object('id', b.id, 'title', b.title)) AS books \
          FROM books.book_formats bf \
@@ -703,7 +740,7 @@ pub async fn duplicates(
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE bf.content_hash IS NOT NULL AND {readable} \
          GROUP BY bf.content_hash HAVING count(DISTINCT b.id) > 1"
-    ))
+    )))
     .bind(user.id)
     .fetch_all(&state.db)
     .await?;

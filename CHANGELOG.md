@@ -11,6 +11,16 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Security
 
+- **Database driver updated past an unfixable advisory.** The previous line
+  pulled in an RSA implementation vulnerable to a timing side-channel
+  (RUSTSEC-2023-0071) for which no fix will ever exist. The new line does not
+  depend on it at all, and it refuses any SQL string built at run time unless it
+  has been audited — the queries here were checked and marked.
+- **The OPDS "recently added" feed no longer puts a URL value into its query
+  text.** Its `?limit=` was pasted into the SQL rather than passed as a value.
+  It was bounded to 1-100 beforehand, so nothing could be smuggled through it,
+  but the shape was the one that goes wrong; the limit is now sent as a value
+  like every other.
 - **Input validation library updated.** The version in use carried
   RUSTSEC-2024-0421 through its domain-name parser, which accepted Punycode
   labels that decode to plain ASCII — a mismatch an attacker can use to make two

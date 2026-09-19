@@ -79,12 +79,15 @@ pub async fn get_collection(
     // the series it lists sit in a library this reader was never given. The
     // join on `libraries` is what was missing.
     let readable = access::readable_series("$2", state.instance().block_unrated_sql());
-    let series = sqlx::query_as::<_, Series>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let series = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
         "SELECT s.* FROM books.collection_series cs \
          JOIN books.series s ON s.id = cs.series_id \
          JOIN books.libraries l ON l.id = s.library_id \
          WHERE cs.collection_id = $1 AND {readable} ORDER BY cs.position, s.name"
-    ))
+    )))
     .bind(id)
     .bind(user.id)
     .fetch_all(&state.db)
@@ -170,12 +173,15 @@ pub async fn get_read_list(
         "SELECT id, name, description, is_public FROM books.read_lists WHERE id=$1 AND (is_public OR owner_id=$2)",
     ).bind(id).bind(user.id).fetch_optional(&state.db).await?.ok_or_else(|| BooksError::NotFound("Liste de lecture".into()))?;
     let readable = access::readable_book("$2", state.instance().block_unrated_sql());
-    let books = sqlx::query_as::<_, Book>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let books = sqlx::query_as::<_, Book>(sqlx::AssertSqlSafe(format!(
         "SELECT b.* FROM books.read_list_books rb \
          JOIN books.books b ON b.id = rb.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE rb.read_list_id = $1 AND {readable} ORDER BY rb.position"
-    )).bind(id).bind(user.id).fetch_all(&state.db).await?;
+    ))).bind(id).bind(user.id).fetch_all(&state.db).await?;
     Ok(Json(json!({ "read_list": {"id":rl.0,"name":rl.1,"description":rl.2,"is_public":rl.3}, "books": books })))
 }
 
@@ -257,28 +263,40 @@ pub async fn facets(
     State(state): State<AppState>, Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
     let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    let tags = sqlx::query_as::<_, Facet>(&format!(
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let tags = sqlx::query_as::<_, Facet>(sqlx::AssertSqlSafe(format!(
         "SELECT t AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id, LATERAL jsonb_array_elements_text(b.tags) t \
          WHERE {readable} GROUP BY t ORDER BY count DESC, value LIMIT 300"
-    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
-    let authors = sqlx::query_as::<_, Facet>(&format!(
+    ))).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let authors = sqlx::query_as::<_, Facet>(sqlx::AssertSqlSafe(format!(
         "SELECT a->>'name' AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id, LATERAL jsonb_array_elements(b.authors) a \
          WHERE {readable} AND a->>'name' IS NOT NULL \
          GROUP BY a->>'name' ORDER BY count DESC, value LIMIT 300"
-    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
-    let publishers = sqlx::query_as::<_, Facet>(&format!(
+    ))).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let publishers = sqlx::query_as::<_, Facet>(sqlx::AssertSqlSafe(format!(
         "SELECT b.publisher AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} AND b.publisher IS NOT NULL \
          GROUP BY b.publisher ORDER BY count DESC, value LIMIT 200"
-    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
-    let languages = sqlx::query_as::<_, Facet>(&format!(
+    ))).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    // Audited: the only text spliced in is the access predicate, which
+    // `services::access` builds from `&'static str` arguments alone. Every value
+    // a request carries stays bound.
+    let languages = sqlx::query_as::<_, Facet>(sqlx::AssertSqlSafe(format!(
         "SELECT b.language AS value, count(*) AS count FROM books.books b \
          JOIN books.libraries l ON l.id = b.library_id \
          WHERE {readable} AND b.language IS NOT NULL \
          GROUP BY b.language ORDER BY count DESC, value LIMIT 100"
-    )).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
+    ))).bind(user.id).fetch_all(&state.db).await.unwrap_or_else(facet_failed);
     Ok(Json(json!({ "tags": tags, "authors": authors, "publishers": publishers, "languages": languages })))
 }
