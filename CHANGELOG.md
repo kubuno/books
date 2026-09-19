@@ -11,6 +11,9 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Security
 
+- **PDF reader updated to a patched release.** It could be made to overflow the
+  stack by deeply nested objects (RUSTSEC-2026-0187), and it reads files that
+  users upload.
 - **Database driver updated past an unfixable advisory.** The previous line
   pulled in an RSA implementation vulnerable to a timing side-channel
   (RUSTSEC-2023-0071) for which no fix will ever exist. The new line does not

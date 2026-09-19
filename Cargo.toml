@@ -44,7 +44,7 @@ natord      = "1"
 sevenz-rust = "0.6"   # CB7 (7-zip archives of images)
 unrar       = "0.5"   # CBR (RAR archives — links libunrar, no exec)
 roxmltree   = "0.20"  # EPUB OPF parsing (cover + metadata)
-lopdf       = { version = "0.34", default-features = false, features = ["nom_parser"] }  # PDF page count
+lopdf       = { version = "0.42", default-features = false }  # PDF page count
 tokio-util  = { version = "0.7", features = ["io"] }  # ReaderStream for raw file streaming
 
 # ─── Workspace mono-crate (deps tierces recopiées du monorepo kubuno/core ;
@@ -120,4 +120,4 @@ tokio-tungstenite   = { version = "0.24", features = ["native-tls"] }
 async-stream        = "0.3"
 totp-rs             = { version = "5", features = ["gen_secret", "otpauth"] }
 zip                 = "2"
-quick-xml           = { version = "0.37", features = ["serialize"] }
+quick-xml           = { version = "0.41", features = ["serialize"] }
