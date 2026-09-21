@@ -9,6 +9,22 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ## [Unreleased]
 
+### Changed
+
+- **The library now runs on PostgreSQL, MySQL/MariaDB or SQLite.** The engine is
+  an administrator choice read at start-up (the `[database] engine` setting), not
+  a build-time one, and a single binary connects to whichever is named. Every
+  query the module issues was made portable across the three engines: the
+  PostgreSQL-only `uuid[]` restriction column becomes a JSON array, the per-user
+  access rules (which libraries a reader may see, and the age ceiling) are
+  decided in the application instead of by SQL functions, the tag/author/facet
+  browsers and the "duplicate books" report no longer rely on PostgreSQL array
+  and JSON operators, `RETURNING` and `ON CONFLICT` are expressed in each
+  engine's own form, and integer results are read at a width all three engines
+  accept. Behaviour is identical on every engine. Existing PostgreSQL
+  installations upgrade in place; MySQL/MariaDB and SQLite create the schema
+  fresh.
+
 ### Security
 
 - **7-zip reader replaced by its maintained successor.** Comic archives in the

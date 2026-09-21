@@ -1,136 +1,170 @@
-//! The two predicates every query returning content to a reader must carry.
+//! The two predicates every query returning content to a reader must carry —
+//! library visibility and the age gate — decided in Rust.
 //!
-//! ## Why this is a module and not a constant
+//! ## Why this moved out of SQL
 //!
-//! Restrictions used to be expressed as one `&'static str` living in
-//! `handlers::content`, spelled `$1` because that happened to be where the
-//! reader's id was bound there. Every other handler binds it somewhere else —
-//! `media::visible_format` binds it at `$2` — so those handlers simply went
-//! without, and the restriction stopped at the listings. The catalogue export,
-//! the OPDS feed, the covers, the page images and the download route all
-//! answered in full for a reader who was supposed to see one shelf.
+//! On PostgreSQL these rules were `LANGUAGE sql` functions (`lib_allowed`,
+//! `content_ok`) reading a `uuid[]` restriction column with `= ANY(...)`.
+//! Neither the functions nor arrays exist on MySQL or SQLite. So the reader's
+//! restriction — the set of libraries they may see and their age ceiling — is
+//! now loaded once with [`Restriction::load`] and folded into each query as
+//! bound values, through a [`DbQueryBuilder`]. The decision is identical on the
+//! three engines because it is made here, not by the database.
 //!
-//! Making the parameter an ARGUMENT is what lets the same rule travel to a
-//! query that binds its reader anywhere, which is the only reason the holes
-//! could be closed at all.
+//! ## Why a builder rather than spliced strings
 //!
-//! ## On splicing rather than binding
-//!
-//! Both helpers return SQL text built from a caller-chosen placeholder name and
-//! a column name. Neither ever receives a value that came from a request: the
-//! placeholders are literals written at the call site, the column names are
-//! literals too, and `block_unrated` is an instance setting reduced to one of
-//! two keywords by [`crate::config::instance::InstanceConfig::block_unrated_sql`].
-//! The module assembles all of its SQL this way; the values themselves stay
-//! bound.
-//!
-//! Every spliced argument is typed `&'static str`, so the compiler — not a
-//! reviewer — is what rejects a fragment that came from a request. The one
-//! exception is `content_allowed`'s `col`, which also accepts the output of
-//! [`series_effective_rating`]; that function is itself `&'static str`-only, so
-//! the whole fragment still bottoms out in literals.
+//! The visibility rule binds the reader's id and, when the reader is restricted,
+//! the list of allowed library ids. Those are values, so they are *bound*, not
+//! interpolated. Callers therefore assemble their listing with a
+//! [`DbQueryBuilder`] and let these helpers push the predicate — column names
+//! and keywords are `&'static str`, every value goes through `push_bind` /
+//! `push_in`.
 
-/// A library is visible when it is shared or owned by the reader, AND the
-/// reader's per-account library restriction allows it.
-///
-/// `user` is the placeholder the reader's id is bound to in the caller's query
-/// (`"$1"`, `"$2"`…). The library table must be aliased `l`.
-pub fn visible_library(user: &'static str) -> String {
-    format!("(l.is_shared OR l.owner_id = {user}) AND books.lib_allowed({user}, l.id)")
-}
-
-/// A row clears the reader's age ceiling.
-///
-/// `col` is the qualified age column (`"b.age_rating"`, `"s.age_rating"`).
-/// `block_unrated` is `"TRUE"` or `"FALSE"` — see the module docs above.
-pub fn content_allowed(user: &'static str, col: &str, block_unrated: &'static str) -> String {
-    format!("books.content_ok({user}, {col}, {block_unrated})")
-}
-
-/// Both rules at once, for the common case of listing books.
-pub fn readable_book(user: &'static str, block_unrated: &'static str) -> String {
-    format!(
-        "{} AND {}",
-        visible_library(user),
-        content_allowed(user, "b.age_rating", block_unrated),
-    )
-}
+use kubuno_db::{params, DbPool, DbQueryBuilder, JsonVec};
+use uuid::Uuid;
 
 /// The age rating a series is judged on.
 ///
 /// A series almost never carries one of its own: the scanner reads
-/// `<AgeRating>` out of each FILE, so the rating lands on the books. Judging a
-/// series on its own empty column would mean that turning "block unrated
-/// content" on empties the series view while the book view still shows the
-/// rated books — the same library, answering two different things.
-///
-/// So an unrated series inherits the STRICTEST rating among its books. That is
-/// the conservative direction: a collection containing one adult volume is
-/// treated as adult, never the reverse. A series whose books are all unrated
-/// stays unrated, and the instance setting decides what that means.
-/// `alias` is how the series table is named in the caller's query — `s` in the
-/// listings, `t` in the generic cover lookup, which is exactly why this takes an
-/// argument rather than hard-coding one.
-pub fn series_effective_rating(alias: &'static str) -> String {
-    format!(
-        "COALESCE({alias}.age_rating, \
-         (SELECT max(sb.age_rating) FROM books.books sb WHERE sb.series_id = {alias}.id))"
-    )
+/// `<AgeRating>` out of each FILE, so the rating lands on the books. An unrated
+/// series therefore inherits the STRICTEST rating among its books (`max`, never
+/// `min`: one adult volume makes the whole series adult). `s` is how the series
+/// table is aliased in the listing queries.
+pub const SERIES_RATING_EXPR: &str =
+    "COALESCE(s.age_rating, (SELECT max(sb.age_rating) FROM books.books sb WHERE sb.series_id = s.id))";
+
+/// The same expression for the generic cover lookup, where the series table is
+/// aliased `t`.
+pub const SERIES_RATING_EXPR_T: &str =
+    "COALESCE(t.age_rating, (SELECT max(sb.age_rating) FROM books.books sb WHERE sb.series_id = t.id))";
+
+/// A reader's per-account content restriction, loaded once per request.
+#[derive(Debug, Clone, Default)]
+pub struct Restriction {
+    /// `None` = every library allowed; `Some(set)` = only these (an empty set
+    /// means no library at all, a legitimate answer distinct from `None`).
+    pub library_ids: Option<Vec<Uuid>>,
+    /// `None` = no age ceiling; `Some(max)` = content must not exceed it.
+    pub age_max: Option<i32>,
 }
 
-/// Both rules at once, for listing series.
-pub fn readable_series(user: &'static str, block_unrated: &'static str) -> String {
-    format!(
-        "{} AND {}",
-        visible_library(user),
-        content_allowed(user, &series_effective_rating("s"), block_unrated),
-    )
+impl Restriction {
+    /// Loads the reader's restriction. An absent row means unrestricted.
+    pub async fn load(db: &DbPool, user_id: Uuid) -> Result<Restriction, sqlx::Error> {
+        let row = db
+            .fetch_optional_as::<(Option<JsonVec<Uuid>>, Option<i32>)>(
+                "SELECT library_ids, age_max FROM books.user_restrictions WHERE user_id = $1",
+                params![user_id],
+            )
+            .await?;
+        Ok(match row {
+            Some((libs, age_max)) => Restriction {
+                library_ids: libs.map(JsonVec::into_inner),
+                age_max,
+            },
+            None => Restriction::default(),
+        })
+    }
+
+    /// Pushes the "library visible to this reader" predicate. The library table
+    /// must be aliased `l`. Binds the reader id (and the allowed set, if any).
+    pub fn push_visible_library(&self, qb: &mut DbQueryBuilder, user_id: Uuid) {
+        qb.push("(l.is_shared OR l.owner_id = ").push_bind(user_id).push(")");
+        if let Some(ids) = &self.library_ids {
+            // Restricted: the library must be in the allowed set. An empty set
+            // renders `IN (NULL)`, which matches nothing — exactly "no library".
+            qb.push(" AND l.id").push_in(ids.iter().copied());
+        }
+    }
+
+    /// Pushes the age-gate predicate on `col` (a `&'static str` column
+    /// expression, e.g. `"b.age_rating"` or [`SERIES_RATING_EXPR`]).
+    ///
+    /// * No ceiling → always allowed.
+    /// * Ceiling set → rated content must be within it; unrated content is
+    ///   allowed unless the instance blocks unrated for restricted readers.
+    pub fn push_age(&self, qb: &mut DbQueryBuilder, col: &str, block_unrated: bool) {
+        match self.age_max {
+            None => {
+                // No ceiling for this reader: nothing to filter.
+                qb.push("1 = 1");
+            }
+            Some(max) => {
+                qb.push("(");
+                if block_unrated {
+                    // Unrated is withheld; rated must be within the ceiling.
+                    qb.push(col).push(" IS NOT NULL AND ").push(col).push(" <= ").push_bind(max);
+                } else {
+                    // Unrated passes; rated must be within the ceiling.
+                    qb.push(col).push(" IS NULL OR ").push(col).push(" <= ").push_bind(max);
+                }
+                qb.push(")");
+            }
+        }
+    }
+
+    /// Both rules at once, for listing books (rated on `b.age_rating`).
+    pub fn push_readable_book(&self, qb: &mut DbQueryBuilder, user_id: Uuid, block_unrated: bool) {
+        self.push_visible_library(qb, user_id);
+        qb.push(" AND ");
+        self.push_age(qb, "b.age_rating", block_unrated);
+    }
+
+    /// Both rules at once, for listing series (rated on the effective rating).
+    pub fn push_readable_series(&self, qb: &mut DbQueryBuilder, user_id: Uuid, block_unrated: bool) {
+        self.push_visible_library(qb, user_id);
+        qb.push(" AND ");
+        self.push_age(qb, SERIES_RATING_EXPR, block_unrated);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kubuno_db::dialect::Backend;
 
-    /// The placeholder must appear in BOTH halves of the visibility rule.
-    /// Getting one of the two wrong is invisible in testing — the query still
-    /// runs, it just stops restricting.
-    ///
-    /// Asserted on the STRUCTURE, not on a count: an earlier version of this
-    /// test expected the placeholder three times, which was simply one more
-    /// than the rule has ever contained. A count says nothing about WHERE the
-    /// placeholder landed, and it turns any future clause into a false alarm —
-    /// the failure mode worth catching is a half that lost its reader, so that
-    /// is what is checked.
-    #[test]
-    fn the_reader_placeholder_reaches_every_clause() {
-        let sql = visible_library("$2");
-        let halves: Vec<&str> = sql.split(" AND ").collect();
-        assert_eq!(halves.len(), 2, "la règle de visibilité doit garder ses deux moitiés : {sql}");
-        for half in halves {
-            assert!(half.contains("$2"), "moitié sans le lecteur — elle ne restreint plus : {half}");
-        }
-        assert!(!sql.contains("$1"), "le placeholder du caller ne doit pas être codé en dur : {sql}");
+    fn qb() -> DbQueryBuilder {
+        DbQueryBuilder::new(Backend::Postgres, "")
     }
 
     #[test]
-    fn a_readable_book_carries_the_library_rule_and_the_age_rule() {
-        let sql = readable_book("$1", "TRUE");
-        assert!(sql.contains("books.lib_allowed($1"));
-        assert!(sql.contains("books.content_ok($1, b.age_rating, TRUE)"));
+    fn an_unrestricted_reader_sees_by_ownership_only() {
+        let r = Restriction::default();
+        let mut b = qb();
+        r.push_visible_library(&mut b, Uuid::nil());
+        assert!(b.as_sql().contains("l.is_shared OR l.owner_id ="));
+        assert!(!b.as_sql().contains(" IN ("));
+        assert_eq!(b.bind_count(), 1);
     }
 
     #[test]
-    fn a_book_is_rated_on_its_own_column() {
-        assert!(readable_book("$1", "FALSE").contains("b.age_rating"));
+    fn a_restricted_reader_is_limited_to_the_allowed_set() {
+        let r = Restriction { library_ids: Some(vec![Uuid::nil(), Uuid::nil()]), age_max: None };
+        let mut b = qb();
+        r.push_visible_library(&mut b, Uuid::nil());
+        assert!(b.as_sql().contains("l.id IN ("));
+        // one reader id + two library ids
+        assert_eq!(b.bind_count(), 3);
     }
 
-    /// A series inherits the strictest rating of its books when it carries
-    /// none — `max`, never `min`: one adult volume makes the series adult.
     #[test]
-    fn an_unrated_series_inherits_the_strictest_rating_of_its_books() {
-        let sql = readable_series("$1", "TRUE");
-        assert!(sql.contains("COALESCE(s.age_rating"));
-        assert!(sql.contains("max(sb.age_rating)"));
-        assert!(!sql.contains("min(sb.age_rating)"));
+    fn no_ceiling_filters_nothing() {
+        let r = Restriction::default();
+        let mut b = qb();
+        r.push_age(&mut b, "b.age_rating", true);
+        assert_eq!(b.as_sql().trim(), "1 = 1");
+        assert_eq!(b.bind_count(), 0);
+    }
+
+    #[test]
+    fn a_ceiling_admits_unrated_unless_the_instance_blocks_it() {
+        let r = Restriction { library_ids: None, age_max: Some(12) };
+        let mut open = qb();
+        r.push_age(&mut open, "b.age_rating", false);
+        assert!(open.as_sql().contains("b.age_rating IS NULL OR b.age_rating <="));
+
+        let mut blocked = qb();
+        r.push_age(&mut blocked, "b.age_rating", true);
+        assert!(blocked.as_sql().contains("b.age_rating IS NOT NULL AND b.age_rating <="));
     }
 }

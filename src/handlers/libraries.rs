@@ -3,6 +3,8 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use chrono::Utc;
+use kubuno_db::{new_id, params, DbQueryBuilder};
 use kubuno_storage::path::user_folder_dir;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -11,6 +13,7 @@ use crate::{
     errors::BooksError,
     middleware::auth::AuthUser,
     models::library::{BookLibrary, CreateLibraryDto, UpdateLibraryDto},
+    services::access::Restriction,
     state::AppState,
 };
 
@@ -18,11 +21,6 @@ use crate::{
 const LIB_TYPES: &[&str] = &["books", "comics", "ebooks"];
 
 /// The column list every library row is returned with.
-///
-/// A macro rather than a `const` so that callers can `concat!` it into a query
-/// that is a single string literal: a query assembled at compile time carries no
-/// run-time text at all, which is what keeps these statements out of the
-/// dynamic-SQL audit entirely.
 macro_rules! library_columns {
     () => {
         r#"id, owner_id, name, lib_type, path, icon, color,
@@ -33,53 +31,21 @@ macro_rules! library_columns {
     };
 }
 
-const LIST_LIBRARIES_SQL: &str = concat!(
-    "SELECT ", library_columns!(), " FROM books.libraries \
-     WHERE (is_shared = TRUE OR owner_id = $1) AND books.lib_allowed($1, id) ORDER BY name"
-);
-
-const INSERT_REMOTE_MOUNT_SQL: &str = concat!(
-    "INSERT INTO books.libraries \
-     (owner_id, name, lib_type, path, icon, color, is_shared, \
-      source_type, remote_mount_id, remote_mount_path, remote_owner_id, settings) \
-     VALUES ($1,$2,$3,'',$4,$5,$6,'remote_mount',$7,$8,$1,$9) \
-     RETURNING ", library_columns!()
-);
-
-const INSERT_FILES_FOLDER_SQL: &str = concat!(
-    "INSERT INTO books.libraries \
-     (owner_id, name, lib_type, path, icon, color, is_shared, \
-      source_type, files_folder_id, files_owner_id, settings) \
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'files_folder',$8,$9,$10) \
-     RETURNING ", library_columns!()
-);
-
-const INSERT_FILESYSTEM_SQL: &str = concat!(
-    "INSERT INTO books.libraries (owner_id, name, lib_type, path, icon, color, is_shared, settings) \
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
-     RETURNING ", library_columns!()
-);
-
-const UPDATE_LIBRARY_SQL: &str = concat!(
-    "UPDATE books.libraries \
-     SET name      = COALESCE($2, name), \
-         path      = COALESCE($3, path), \
-         icon      = COALESCE($4, icon), \
-         color     = COALESCE($5, color), \
-         is_shared = COALESCE($6, is_shared), \
-         settings  = COALESCE($7, settings) \
-     WHERE id = $1 \
-     RETURNING ", library_columns!()
-);
+const RESELECT_LIBRARY_SQL: &str =
+    concat!("SELECT ", library_columns!(), " FROM books.libraries WHERE id = $1");
 
 pub async fn list_libraries(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
-    let rows = sqlx::query_as::<_, BookLibrary>(LIST_LIBRARIES_SQL)
-        .bind(user.id)
-        .fetch_all(&state.db)
-        .await?;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        concat!("SELECT ", library_columns!(), " FROM books.libraries l WHERE "),
+    );
+    restriction.push_visible_library(&mut qb, user.id);
+    qb.push_order_by("name");
+    let rows = qb.fetch_all_as::<BookLibrary>(&state.db).await?;
     Ok(Json(json!({ "libraries": rows })))
 }
 
@@ -96,8 +62,13 @@ pub async fn create_library(
     }
 
     let source_type = dto.source_type.as_deref().unwrap_or("filesystem");
+    let id = new_id();
+    let icon = dto.icon.as_deref().unwrap_or("📚").to_string();
+    let color = dto.color.as_deref().unwrap_or("#1a73e8").to_string();
+    let is_shared = dto.is_shared.unwrap_or(true);
+    let settings = dto.settings.clone().unwrap_or_else(|| serde_json::json!({}));
 
-    let row: BookLibrary = if source_type == "remote_mount" {
+    if source_type == "remote_mount" {
         let mount_id = dto.remote_mount_id
             .as_deref()
             .filter(|s| !s.is_empty())
@@ -105,79 +76,76 @@ pub async fn create_library(
             .to_string();
         let mount_path = dto.remote_mount_path.as_deref().unwrap_or("").to_string();
 
-        sqlx::query_as::<_, BookLibrary>(INSERT_REMOTE_MOUNT_SQL)
-            .bind(user.id)
-            .bind(&dto.name)
-            .bind(&dto.lib_type)
-            .bind(dto.icon.as_deref().unwrap_or("📚"))
-            .bind(dto.color.as_deref().unwrap_or("#1a73e8"))
-            .bind(dto.is_shared.unwrap_or(true))
-            .bind(&mount_id)
-            .bind(&mount_path)
-            .bind(dto.settings.clone().unwrap_or_else(|| serde_json::json!({})))
-            .fetch_one(&state.db)
-            .await?
+        state
+            .db
+            .execute(
+                "INSERT INTO books.libraries \
+                 (id, owner_id, name, lib_type, path, icon, color, is_shared, \
+                  source_type, remote_mount_id, remote_mount_path, remote_owner_id, settings) \
+                 VALUES ($1,$2,$3,$4,'',$5,$6,$7,'remote_mount',$8,$9,$10,$11)",
+                params![id, user.id, dto.name, dto.lib_type, icon, color, is_shared, mount_id, mount_path, user.id, settings],
+            )
+            .await?;
     } else if source_type == "files_folder" {
         let folder_id = dto.files_folder_id
             .ok_or_else(|| BooksError::Validation("files_folder_id requis pour source files_folder".into()))?;
         // The folder's owner can be supplied or resolved from the drive folder itself.
+        // NOTE: cross-schema read into the drive schema (PostgreSQL/MySQL only).
         let owner_id = match dto.files_owner_id {
             Some(o) => o,
-            None => sqlx::query_scalar::<_, Uuid>(
-                "SELECT owner_id FROM drive.folders WHERE id = $1 AND is_trashed = FALSE",
-            )
-            .bind(folder_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| BooksError::NotFound(format!("Dossier drive {folder_id}")))?,
+            None => state
+                .db
+                .fetch_optional_scalar::<Uuid>(
+                    "SELECT owner_id FROM drive.folders WHERE id = $1 AND is_trashed = FALSE",
+                    params![folder_id],
+                )
+                .await?
+                .ok_or_else(|| BooksError::NotFound(format!("Dossier drive {folder_id}")))?,
         };
         let base = state.settings.storage.files_storage_base.as_deref()
             .ok_or_else(|| BooksError::Validation("storage.files_storage_base non configuré sur ce serveur".into()))?;
 
-        // Cross-schema read into the drive module's schema (kept as-is).
-        let folder_path: String = sqlx::query_scalar::<_, String>(
-            "SELECT path FROM drive.folders WHERE id = $1 AND owner_id = $2",
-        )
-        .bind(folder_id)
-        .bind(owner_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| BooksError::NotFound(format!("Dossier drive {folder_id}")))?;
+        let folder_path: String = state
+            .db
+            .fetch_optional_scalar::<String>(
+                "SELECT path FROM drive.folders WHERE id = $1 AND owner_id = $2",
+                params![folder_id, owner_id],
+            )
+            .await?
+            .ok_or_else(|| BooksError::NotFound(format!("Dossier drive {folder_id}")))?;
 
         let rel = user_folder_dir(owner_id, &folder_path);
         let resolved = format!("{}/{}", base.trim_end_matches('/'), rel.to_string_lossy());
 
-        sqlx::query_as::<_, BookLibrary>(INSERT_FILES_FOLDER_SQL)
-            .bind(user.id)
-            .bind(&dto.name)
-            .bind(&dto.lib_type)
-            .bind(&resolved)
-            .bind(dto.icon.as_deref().unwrap_or("📚"))
-            .bind(dto.color.as_deref().unwrap_or("#1a73e8"))
-            .bind(dto.is_shared.unwrap_or(true))
-            .bind(folder_id)
-            .bind(owner_id)
-            .bind(dto.settings.clone().unwrap_or_else(|| serde_json::json!({})))
-            .fetch_one(&state.db)
-            .await?
+        state
+            .db
+            .execute(
+                "INSERT INTO books.libraries \
+                 (id, owner_id, name, lib_type, path, icon, color, is_shared, \
+                  source_type, files_folder_id, files_owner_id, settings) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'files_folder',$9,$10,$11)",
+                params![id, user.id, dto.name, dto.lib_type, resolved, icon, color, is_shared, folder_id, owner_id, settings],
+            )
+            .await?;
     } else {
-        let path = dto.path
+        let path = dto.path.clone()
             .filter(|p| !p.is_empty())
             .ok_or_else(|| BooksError::Validation("path requis pour source filesystem".into()))?;
 
-        sqlx::query_as::<_, BookLibrary>(INSERT_FILESYSTEM_SQL)
-            .bind(user.id)
-            .bind(&dto.name)
-            .bind(&dto.lib_type)
-            .bind(&path)
-            .bind(dto.icon.as_deref().unwrap_or("📚"))
-            .bind(dto.color.as_deref().unwrap_or("#1a73e8"))
-            .bind(dto.is_shared.unwrap_or(true))
-            .bind(dto.settings.clone().unwrap_or_else(|| serde_json::json!({})))
-            .fetch_one(&state.db)
-            .await?
-    };
+        state
+            .db
+            .execute(
+                "INSERT INTO books.libraries (id, owner_id, name, lib_type, path, icon, color, is_shared, settings) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                params![id, user.id, dto.name, dto.lib_type, path, icon, color, is_shared, settings],
+            )
+            .await?;
+    }
 
+    let row = state
+        .db
+        .fetch_one_as::<BookLibrary>(RESELECT_LIBRARY_SQL, params![id])
+        .await?;
     Ok((StatusCode::CREATED, Json(json!(row))))
 }
 
@@ -190,15 +158,20 @@ pub async fn update_library(
     if user.role != "admin" {
         return Err(BooksError::Forbidden);
     }
-    let row = sqlx::query_as::<_, BookLibrary>(UPDATE_LIBRARY_SQL)
-        .bind(id)
-        .bind(dto.name)
-        .bind(dto.path)
-        .bind(dto.icon)
-        .bind(dto.color)
-        .bind(dto.is_shared)
-        .bind(dto.settings)
-        .fetch_optional(&state.db)
+    let mut qb = DbQueryBuilder::new(state.db.backend(), "UPDATE books.libraries SET ");
+    qb.push("name = COALESCE(").push_bind(dto.name).push(", name)");
+    qb.push(", path = COALESCE(").push_bind(dto.path).push(", path)");
+    qb.push(", icon = COALESCE(").push_bind(dto.icon).push(", icon)");
+    qb.push(", color = COALESCE(").push_bind(dto.color).push(", color)");
+    qb.push(", is_shared = COALESCE(").push_bind(dto.is_shared).push(", is_shared)");
+    qb.push(", settings = COALESCE(").push_bind(dto.settings).push(", settings)");
+    qb.push(", updated_at = ").push_bind(Utc::now());
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.execute(&state.db).await?;
+
+    let row = state
+        .db
+        .fetch_optional_as::<BookLibrary>(RESELECT_LIBRARY_SQL, params![id])
         .await?
         .ok_or_else(|| BooksError::NotFound(format!("Bibliothèque {id}")))?;
     Ok(Json(json!(row)))
@@ -222,17 +195,19 @@ pub async fn list_files_folders(
     if user.role != "admin" {
         return Err(BooksError::Forbidden);
     }
-    // Cross-schema read into the drive + core schemas (kept as-is).
-    let rows = sqlx::query_as::<_, FilesFolderRow>(
-        r#"SELECT f.id, f.owner_id, f.path, f.name,
-                  u.email        AS owner_email,
-                  u.display_name AS owner_display_name
-           FROM drive.folders f
-           JOIN core.users u ON u.id = f.owner_id
-           ORDER BY u.email, f.path"#,
-    )
-    .fetch_all(&state.db)
-    .await?;
+    // NOTE: cross-schema read into the drive + core schemas (PostgreSQL/MySQL only).
+    let rows = state
+        .db
+        .fetch_all_as::<FilesFolderRow>(
+            "SELECT f.id, f.owner_id, f.path, f.name, \
+                    u.email        AS owner_email, \
+                    u.display_name AS owner_display_name \
+             FROM drive.folders f \
+             JOIN core.users u ON u.id = f.owner_id \
+             ORDER BY u.email, f.path",
+            params![],
+        )
+        .await?;
 
     let folders: Vec<_> = rows.iter().map(|r| json!({
         "id":                 r.id,
@@ -256,20 +231,20 @@ pub async fn delete_library(
     }
 
     // Capture this library's cached remote files before the cascade removes the rows.
-    let cached: Vec<String> = sqlx::query_scalar::<_, String>(
-        "SELECT bf.local_cache_path FROM books.book_formats bf \
-         JOIN books.books b ON b.id = bf.book_id \
-         WHERE b.library_id = $1 AND bf.local_cache_path IS NOT NULL",
-    )
-    .bind(id)
-    .fetch_all(&state.db)
-    .await?;
+    let cached = state
+        .db
+        .fetch_all_as::<(String,)>(
+            "SELECT bf.local_cache_path FROM books.book_formats bf \
+             JOIN books.books b ON b.id = bf.book_id \
+             WHERE b.library_id = $1 AND bf.local_cache_path IS NOT NULL",
+            params![id],
+        )
+        .await?;
 
-    let affected = sqlx::query("DELETE FROM books.libraries WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await?
-        .rows_affected();
+    let affected = state
+        .db
+        .execute("DELETE FROM books.libraries WHERE id = $1", params![id])
+        .await?;
 
     if affected == 0 {
         return Err(BooksError::NotFound(format!("Bibliothèque {id}")));
@@ -277,15 +252,21 @@ pub async fn delete_library(
 
     // Remove now-orphaned cache files (a file may be shared by another library on
     // the same mount — only delete it when no remaining format references it).
-    for path in cached {
-        let still_used: bool = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM books.book_formats WHERE local_cache_path = $1)",
-        )
-        .bind(&path)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(true);
-        if !still_used {
+    for (path,) in cached {
+        let still_used = state
+            .db
+            .fetch_optional_scalar::<i64>(
+                &format!(
+                    "SELECT {} FROM books.book_formats WHERE local_cache_path = $1",
+                    state.db.backend().count_bigint("*")
+                ),
+                params![&path],
+            )
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(1);
+        if still_used == 0 {
             let _ = tokio::fs::remove_file(&path).await;
         }
     }
@@ -303,20 +284,20 @@ pub async fn start_scan(
         return Err(BooksError::Forbidden);
     }
 
-    let exists: Option<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM books.libraries WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
-
+    let exists = state
+        .db
+        .fetch_optional_scalar::<Uuid>("SELECT id FROM books.libraries WHERE id = $1", params![id])
+        .await?;
     if exists.is_none() {
         return Err(BooksError::NotFound(format!("Bibliothèque {id}")));
     }
 
-    sqlx::query("UPDATE books.libraries SET scan_status = 'scanning', scan_error = NULL WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
+    state
+        .db
+        .execute(
+            "UPDATE books.libraries SET scan_status = 'scanning', scan_error = NULL WHERE id = $1",
+            params![id],
+        )
         .await?;
 
     let st = state.clone();
@@ -325,23 +306,20 @@ pub async fn start_scan(
     Ok(Json(json!({ "message": "Scan démarré", "library_id": id })))
 }
 
-/// Progress of a scan. Restricted like every other library route: this was the
-/// only authenticated handler that never looked at WHO was asking, so it
-/// confirmed the existence of any library id to anybody — including ones the
-/// reader's restriction hides.
+/// Progress of a scan. Restricted like every other library route.
 pub async fn scan_status(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
-    let status: Option<String> = sqlx::query_scalar::<_, String>(
-        "SELECT scan_status FROM books.libraries \
-         WHERE id = $1 AND (is_shared = TRUE OR owner_id = $2) AND books.lib_allowed($2, id)",
-    )
-    .bind(id)
-    .bind(user.id)
-    .fetch_optional(&state.db)
-    .await?;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT scan_status FROM books.libraries l WHERE id = ",
+    );
+    qb.push_bind(id).push(" AND ");
+    restriction.push_visible_library(&mut qb, user.id);
+    let status = qb.fetch_optional_scalar::<String>(&state.db).await?;
 
     Ok(Json(json!({ "status": status.unwrap_or_else(|| "idle".into()) })))
 }

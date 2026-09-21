@@ -33,7 +33,8 @@ pub struct InstanceConfig {
     pub opds_enabled: bool,
     /// Whether content carrying NO age rating is withheld from readers who have
     /// an age ceiling. Off, an unrated book is readable by everybody — which is
-    /// the whole library until somebody rates it.
+    /// the whole library until somebody rates it. Consumed by
+    /// [`crate::services::access::Restriction::push_age`].
     pub block_unrated: bool,
     /// Whether the scanner reads `<AgeRating>` out of ComicInfo.xml. On by
     /// default: without it, `age_rating` stays empty and the age ceiling has
@@ -66,19 +67,6 @@ impl InstanceConfig {
             block_unrated:     bool_of("block_unrated", d.block_unrated),
             import_age_rating: bool_of("import_age_rating", d.import_age_rating),
         }
-    }
-
-    /// The literal spliced into the `books.content_ok(...)` calls of every
-    /// listing query.
-    ///
-    /// Splicing rather than binding is deliberate: the value is the module's own
-    /// setting, never anything a request carries, and the queries of this module
-    /// are assembled from `&'static str` fragments exactly this way (see
-    /// `handlers::content::VISIBLE`). Binding it would mean renumbering every
-    /// positional parameter of a dozen queries, which is how a filter ends up
-    /// silently applied to the wrong column.
-    pub fn block_unrated_sql(&self) -> &'static str {
-        if self.block_unrated { "TRUE" } else { "FALSE" }
     }
 }
 
@@ -131,16 +119,6 @@ mod tests {
         assert!(!c.allow_downloads);
         assert!(!c.opds_enabled);
         assert!(c.block_unrated);
-    }
-
-    /// The fragment goes into SQL, so it may only ever be one of two literals —
-    /// never anything derived from a value that could travel from a request.
-    #[test]
-    fn block_unrated_sql_is_a_closed_pair_of_literals() {
-        let d = InstanceConfig::default();
-        assert_eq!(d.block_unrated_sql(), "FALSE");
-        let c = InstanceConfig::from_settings(&json!({ "block_unrated": true }));
-        assert_eq!(c.block_unrated_sql(), "TRUE");
     }
 
     /// A non-boolean value is a mistake, not an instruction to open something.

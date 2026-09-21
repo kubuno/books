@@ -1,11 +1,10 @@
 // OPDS 1.2 catalog feeds (Atom XML) so external reading apps can browse and download.
-// NOTE: external OPDS apps authenticate with HTTP Basic; that requires the core proxy to accept
-// Basic auth and inject the user — these feeds work today behind the standard session/Bearer auth.
 use axum::{
     extract::{Extension, Path, Query, State},
     http::header,
     response::{IntoResponse, Response},
 };
+use kubuno_db::DbQueryBuilder;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -13,7 +12,7 @@ use crate::{
     errors::BooksError,
     middleware::auth::AuthUser,
     models::content::{BookListItem, Series},
-    services::access,
+    services::{access::Restriction, formats},
     state::AppState,
 };
 
@@ -22,11 +21,10 @@ const NAV: &str = "application/atom+xml;profile=opds-catalog;kind=navigation";
 const ACQ: &str = "application/atom+xml;profile=opds-catalog;kind=acquisition";
 const BASE: &str = "/api/v1/books/opds";
 
+const OPDS_BOOK_COLS: &str = "b.id, b.library_id, b.series_id, b.title, b.sort_title, \
+    b.series_index, b.page_count, b.cover_format_id, b.added_at";
+
 /// Instance policy gate, applied to every feed of this file.
-///
-/// OPDS hands out acquisition links to reading apps and has no page anybody
-/// browses, so "nobody knows the URL" is the only thing protecting an instance
-/// that never meant to publish it. This turns that into a decision.
 fn opds_open(state: &AppState) -> Result<(), BooksError> {
     if state.instance().opds_enabled {
         Ok(())
@@ -62,9 +60,7 @@ fn nav_entry(title: &str, content: &str, href: &str) -> String {
 }
 
 /// One catalogue entry. The acquisition link is omitted entirely when downloads
-/// are off: an OPDS reader shown a link that answers 403 reports the library as
-/// broken, where an entry with no acquisition link is simply not downloadable —
-/// which is what the instance actually decided.
+/// are off.
 fn book_entry(b: &BookListItem, allow_downloads: bool) -> String {
     let id = b.id;
     let download_type = match b.formats.first().map(|s| s.as_str()) {
@@ -98,17 +94,15 @@ pub async fn root(State(state): State<AppState>, Extension(_u): Extension<AuthUs
 
 pub async fn series_nav(State(state): State<AppState>, Extension(user): Extension<AuthUser>) -> Result<Response, BooksError> {
     opds_open(&state)?;
-    let readable = access::readable_series("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
-        "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE {readable} ORDER BY s.sort_name NULLS LAST, s.name"
-    )))
-    .bind(user.id)
-    .fetch_all(&state.db)
-    .await?;
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id WHERE ",
+    );
+    restriction.push_readable_series(&mut qb, user.id, block);
+    qb.push_order_by("(s.sort_name IS NULL), s.sort_name, s.name");
+    let rows = qb.fetch_all_as::<Series>(&state.db).await?;
     let mut body = String::new();
     for s in &rows {
         body.push_str(&nav_entry(&s.name, &format!("{} livre(s)", s.book_count), &format!("{BASE}/series/{}", s.id)));
@@ -116,44 +110,39 @@ pub async fn series_nav(State(state): State<AppState>, Extension(user): Extensio
     Ok(feed(&format!("{BASE}/series"), "Séries", &body))
 }
 
-/// The shared body of both acquisition feeds.
-///
-/// `extra` is the tail of the WHERE/ORDER BY clause. It is `&'static str` on
-/// purpose: the recent feed used to build it with `format!()` around the `?limit`
-/// of the URL, which put a request value into the query TEXT. The limit is now
-/// bound like any other value, and the type makes the old shape impossible to
-/// write again. Whichever of `bind_id`/`bind_limit` a caller supplies lands on
-/// `$2`; no caller passes both.
+/// The shared body of both acquisition feeds. `series`/`limit` are mutually
+/// exclusive: a series feed orders by index, the recent feed by date with a cap.
 async fn books_query(
     state: &AppState,
     user_id: Uuid,
-    extra: &'static str,
-    bind_id: Option<Uuid>,
-    bind_limit: Option<i64>,
+    series: Option<Uuid>,
+    limit: Option<i64>,
 ) -> Result<Vec<BookListItem>, BooksError> {
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate (built by
-    // `services::access` from `&'static str` alone) and a `&'static str` tail.
-    let sql = sqlx::AssertSqlSafe(format!(
-        "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, b.page_count, b.cover_format_id, b.added_at, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
-         FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {readable} {extra}"
-    ));
-    let mut q = sqlx::query_as::<_, BookListItem>(sql).bind(user_id);
-    if let Some(id) = bind_id {
-        q = q.bind(id);
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user_id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        format!("SELECT {OPDS_BOOK_COLS} FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE "),
+    );
+    restriction.push_readable_book(&mut qb, user_id, block);
+    if let Some(sid) = series {
+        qb.push(" AND b.series_id = ").push_bind(sid);
+        qb.push_order_by("(b.series_index IS NULL), b.series_index, b.title");
+    } else {
+        qb.push_order_by("b.added_at DESC");
+        if let Some(l) = limit {
+            qb.push_limit_offset(l, 0);
+        }
     }
-    if let Some(limit) = bind_limit {
-        q = q.bind(limit);
-    }
-    Ok(q.fetch_all(&state.db).await?)
+    let mut rows = qb.fetch_all_as::<BookListItem>(&state.db).await?;
+    formats::attach(&state.db, &mut rows).await?;
+    Ok(rows)
 }
 
 pub async fn series_acq(State(state): State<AppState>, Extension(user): Extension<AuthUser>, Path(id): Path<Uuid>) -> Result<Response, BooksError> {
     opds_open(&state)?;
     let allow_downloads = state.instance().allow_downloads;
-    let books = books_query(&state, user.id, "AND b.series_id = $2 ORDER BY b.series_index NULLS LAST, b.title", Some(id), None).await?;
+    let books = books_query(&state, user.id, Some(id), None).await?;
     let mut body = String::new();
     for b in &books {
         body.push_str(&book_entry(b, allow_downloads));
@@ -170,7 +159,7 @@ pub async fn recent_acq(State(state): State<AppState>, Extension(user): Extensio
     opds_open(&state)?;
     let allow_downloads = state.instance().allow_downloads;
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
-    let books = books_query(&state, user.id, "ORDER BY b.added_at DESC LIMIT $2", None, Some(limit)).await?;
+    let books = books_query(&state, user.id, None, Some(limit)).await?;
     let mut body = String::new();
     for b in &books {
         body.push_str(&book_entry(b, allow_downloads));

@@ -1,0 +1,13 @@
+DROP TABLE IF EXISTS user_restrictions;
+DROP TABLE IF EXISTS saved_searches;
+DROP TABLE IF EXISTS read_list_books;
+DROP TABLE IF EXISTS read_lists;
+DROP TABLE IF EXISTS collection_series;
+DROP TABLE IF EXISTS collections;
+DROP TABLE IF EXISTS read_progress;
+DROP TABLE IF EXISTS pages;
+DROP TABLE IF EXISTS book_formats;
+DROP TABLE IF EXISTS books;
+DROP TABLE IF EXISTS series;
+DROP TABLE IF EXISTS settings;
+DROP TABLE IF EXISTS libraries;

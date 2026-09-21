@@ -2,7 +2,8 @@ use axum::{
     extract::{Extension, Path, Query, State},
     Json,
 };
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
+use kubuno_db::{params, DbQueryBuilder};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -11,13 +12,13 @@ use crate::{
     errors::BooksError,
     middleware::auth::AuthUser,
     models::content::{Book, BookFormat, BookListItem, Series},
+    services::{access::Restriction, formats, jsonq},
     state::AppState,
 };
 
-// Access rules live in `services::access` so that every handler returning
-// content — not just the ones in this file — carries the same two predicates.
-// See that module for why the reader's placeholder is an argument.
-use crate::services::access;
+/// Columns of a book-list row (its `formats` are attached in Rust afterwards).
+const BOOK_LIST_COLS: &str = "b.id, b.library_id, b.series_id, b.title, b.sort_title, \
+    b.series_index, b.page_count, b.cover_format_id, b.added_at";
 
 #[derive(Debug, Deserialize)]
 pub struct SeriesQuery {
@@ -29,19 +30,19 @@ pub async fn list_series(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<SeriesQuery>,
 ) -> Result<Json<Value>, BooksError> {
-    let readable = access::readable_series("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
-        "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE {readable} AND ($2::uuid IS NULL OR s.library_id = $2) \
-         ORDER BY s.sort_name NULLS LAST, s.name"
-    )))
-    .bind(user.id)
-    .bind(q.library_id)
-    .fetch_all(&state.db)
-    .await?;
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id WHERE ",
+    );
+    restriction.push_readable_series(&mut qb, user.id, block);
+    if let Some(lib) = q.library_id {
+        qb.push(" AND s.library_id = ").push_bind(lib);
+    }
+    // Portable "NULLS LAST": order the NULL flag first.
+    qb.push_order_by("(s.sort_name IS NULL), s.sort_name, s.name");
+    let rows = qb.fetch_all_as::<Series>(&state.db).await?;
     Ok(Json(json!({ "series": rows })))
 }
 
@@ -50,22 +51,24 @@ pub async fn get_series(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
-    let readable = access::readable_series("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let row = sqlx::query_as::<_, Series>(sqlx::AssertSqlSafe(format!(
-        "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE {readable} AND s.id = $2"
-    )))
-    .bind(user.id)
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| BooksError::NotFound(format!("Série {id}")))?;
-    let lib = sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM books.libraries WHERE id = $1")
-        .bind(row.library_id)
-        .fetch_one(&state.db)
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT s.* FROM books.series s JOIN books.libraries l ON l.id = s.library_id WHERE ",
+    );
+    restriction.push_readable_series(&mut qb, user.id, block);
+    qb.push(" AND s.id = ").push_bind(id);
+    let row = qb
+        .fetch_optional_as::<Series>(&state.db)
+        .await?
+        .ok_or_else(|| BooksError::NotFound(format!("Série {id}")))?;
+    let lib = state
+        .db
+        .fetch_one_as::<(Uuid, String)>(
+            "SELECT id, name FROM books.libraries WHERE id = $1",
+            params![row.library_id],
+        )
         .await?;
     Ok(Json(json!({ "series": row, "library": { "id": lib.0, "name": lib.1 } })))
 }
@@ -75,22 +78,17 @@ pub async fn series_books(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, BookListItem>(sqlx::AssertSqlSafe(format!(
-        "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
-                b.page_count, b.cover_format_id, b.added_at, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
-         FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {readable} AND b.series_id = $2 \
-         ORDER BY b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title"
-    )))
-    .bind(user.id)
-    .bind(id)
-    .fetch_all(&state.db)
-    .await?;
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        format!("SELECT {BOOK_LIST_COLS} FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE "),
+    );
+    restriction.push_readable_book(&mut qb, user.id, block);
+    qb.push(" AND b.series_id = ").push_bind(id);
+    qb.push_order_by("(b.series_index IS NULL), b.series_index, (b.sort_title IS NULL), b.sort_title, b.title");
+    let mut rows = qb.fetch_all_as::<BookListItem>(&state.db).await?;
+    formats::attach(&state.db, &mut rows).await?;
     Ok(Json(json!({ "books": rows })))
 }
 
@@ -109,10 +107,6 @@ pub struct BooksQuery {
     pub offset:     Option<i64>,
 }
 
-const BOOK_LIST_COLS: &str = "b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
-    b.page_count, b.cover_format_id, b.added_at, \
-    COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{}') AS formats";
-
 pub async fn list_books(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -120,45 +114,69 @@ pub async fn list_books(
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(60).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
+    // Portable "NULLS LAST" orderings; one of four literals.
     let sort = match q.sort.as_deref() {
-        Some("title") => "b.sort_title NULLS LAST, b.title",
-        Some("series") => "b.series_index NULLS LAST, b.sort_title NULLS LAST, b.title",
+        Some("title") => "(b.sort_title IS NULL), b.sort_title, b.title",
+        Some("series") => "(b.series_index IS NULL), b.series_index, (b.sort_title IS NULL), b.sort_title, b.title",
         Some("updated") => "b.updated_at DESC",
         _ => "b.added_at DESC",
     };
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: three spliced fragments, none of them run-time data — the column
-    // list is a `const`, `sort` is one of four literals chosen by the match
-    // above, and the access predicate comes from `&'static str` arguments.
-    let rows = sqlx::query_as::<_, BookListItem>(sqlx::AssertSqlSafe(format!(
-        "SELECT {BOOK_LIST_COLS} \
-         FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {readable} \
-           AND ($2::uuid IS NULL OR b.library_id = $2) \
-           AND ($3::uuid IS NULL OR b.series_id = $3) \
-           AND ($4::text IS NULL OR b.title ILIKE '%' || $4 || '%') \
-           AND ($5::text IS NULL OR b.tags @> jsonb_build_array($5::text)) \
-           AND ($6::text IS NULL OR b.authors @> jsonb_build_array(jsonb_build_object('name', $6::text))) \
-           AND ($7::text IS NULL OR b.publisher = $7) \
-           AND ($8::text IS NULL OR b.language = $8) \
-           AND ($9::text IS NULL OR EXISTS (SELECT 1 FROM books.book_formats f WHERE f.book_id = b.id AND f.format = $9)) \
-         ORDER BY {sort} \
-         LIMIT $10 OFFSET $11"
-    )))
-    .bind(user.id)
-    .bind(q.library_id)
-    .bind(q.series_id)
-    .bind(q.search)
-    .bind(q.tag)
-    .bind(q.author)
-    .bind(q.publisher)
-    .bind(q.language)
-    .bind(q.format)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await?;
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        format!("SELECT {BOOK_LIST_COLS} FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE "),
+    );
+    restriction.push_readable_book(&mut qb, user.id, block);
+    if let Some(lib) = q.library_id {
+        qb.push(" AND b.library_id = ").push_bind(lib);
+    }
+    if let Some(sid) = q.series_id {
+        qb.push(" AND b.series_id = ").push_bind(sid);
+    }
+    if let Some(search) = q.search.filter(|s| !s.is_empty()) {
+        push_title_ilike(&mut qb, &search);
+    }
+    if let Some(tag) = q.tag.filter(|s| !s.is_empty()) {
+        qb.push(" AND ");
+        jsonq::push_array_contains(&mut qb, "b.tags", tag);
+    }
+    if let Some(author) = q.author.filter(|s| !s.is_empty()) {
+        qb.push(" AND ");
+        jsonq::push_author_name(&mut qb, author);
+    }
+    if let Some(publisher) = q.publisher.filter(|s| !s.is_empty()) {
+        qb.push(" AND b.publisher = ").push_bind(publisher);
+    }
+    if let Some(language) = q.language.filter(|s| !s.is_empty()) {
+        qb.push(" AND b.language = ").push_bind(language);
+    }
+    if let Some(format) = q.format.filter(|s| !s.is_empty()) {
+        qb.push(" AND EXISTS (SELECT 1 FROM books.book_formats f WHERE f.book_id = b.id AND f.format = ")
+            .push_bind(format)
+            .push(")");
+    }
+    qb.push_order_by(sort);
+    qb.push_limit_offset(limit, offset);
+
+    let mut rows = qb.fetch_all_as::<BookListItem>(&state.db).await?;
+    formats::attach(&state.db, &mut rows).await?;
     Ok(Json(json!({ "books": rows })))
+}
+
+/// Appends ` AND <title ILIKE '%pattern%'>`, binding the pattern.
+fn push_title_ilike(qb: &mut DbQueryBuilder, needle: &str) {
+    use kubuno_db::dialect::Backend;
+    let pattern = format!("%{needle}%");
+    match qb.backend() {
+        Backend::Postgres => {
+            qb.push(" AND b.title ILIKE ").push_bind(pattern);
+        }
+        Backend::MySql | Backend::Sqlite => {
+            qb.push(" AND LOWER(b.title) LIKE LOWER(").push_bind(pattern).push(")");
+        }
+    }
 }
 
 pub async fn recent_books(
@@ -167,21 +185,17 @@ pub async fn recent_books(
     Query(q): Query<BooksQuery>,
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(24).clamp(1, 100);
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, BookListItem>(sqlx::AssertSqlSafe(format!(
-        "SELECT b.id, b.library_id, b.series_id, b.title, b.sort_title, b.series_index, \
-                b.page_count, b.cover_format_id, b.added_at, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats \
-         FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {readable} ORDER BY b.added_at DESC LIMIT $2"
-    )))
-    .bind(user.id)
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await?;
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        format!("SELECT {BOOK_LIST_COLS} FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE "),
+    );
+    restriction.push_readable_book(&mut qb, user.id, block);
+    qb.push_order_by("b.added_at DESC");
+    qb.push_limit_offset(limit, 0);
+    let mut rows = qb.fetch_all_as::<BookListItem>(&state.db).await?;
+    formats::attach(&state.db, &mut rows).await?;
     Ok(Json(json!({ "books": rows })))
 }
 
@@ -190,36 +204,42 @@ pub async fn get_book(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let book = sqlx::query_as::<_, Book>(sqlx::AssertSqlSafe(format!(
-        "SELECT b.* FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE {readable} AND b.id = $2"
-    )))
-    .bind(user.id)
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| BooksError::NotFound(format!("Livre {id}")))?;
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT b.* FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE ",
+    );
+    restriction.push_readable_book(&mut qb, user.id, block);
+    qb.push(" AND b.id = ").push_bind(id);
+    let book = qb
+        .fetch_optional_as::<Book>(&state.db)
+        .await?
+        .ok_or_else(|| BooksError::NotFound(format!("Livre {id}")))?;
 
-    let formats = sqlx::query_as::<_, BookFormat>(
-        "SELECT * FROM books.book_formats WHERE book_id = $1 ORDER BY format",
-    )
-    .bind(id)
-    .fetch_all(&state.db)
-    .await?;
+    let formats = state
+        .db
+        .fetch_all_as::<BookFormat>(
+            "SELECT * FROM books.book_formats WHERE book_id = $1 ORDER BY format",
+            params![id],
+        )
+        .await?;
 
     // Breadcrumb context: library + (optional) series names.
-    let lib = sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM books.libraries WHERE id = $1")
-        .bind(book.library_id)
-        .fetch_one(&state.db)
+    let lib = state
+        .db
+        .fetch_one_as::<(Uuid, String)>(
+            "SELECT id, name FROM books.libraries WHERE id = $1",
+            params![book.library_id],
+        )
         .await?;
     let series = match book.series_id {
-        Some(sid) => sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM books.series WHERE id = $1")
-            .bind(sid)
-            .fetch_optional(&state.db)
+        Some(sid) => state
+            .db
+            .fetch_optional_as::<(Uuid, String)>(
+                "SELECT id, name FROM books.series WHERE id = $1",
+                params![sid],
+            )
             .await?
             .map(|(sid, name)| json!({ "id": sid, "name": name })),
         None => None,
@@ -252,56 +272,23 @@ pub struct UpdateBookDto {
     pub identifiers:       Option<Value>,
 }
 
-/// The assignment list shared by the single-book and the bulk update.
-///
-/// A macro rather than a `const` so that both statements can `concat!` it into
-/// one string literal: the query text is then fixed at compile time and needs no
-/// run-time audit, while the edited values stay bound.
-macro_rules! book_update_set {
-    () => {
-        "\
-    title             = COALESCE($2, title), \
-    sort_title        = COALESCE($3, sort_title), \
-    series_index      = COALESCE($4, series_index), \
-    description       = COALESCE($5, description), \
-    publisher         = COALESCE($6, publisher), \
-    published_date    = COALESCE($7, published_date), \
-    isbn              = COALESCE($8, isbn), \
-    language          = COALESCE($9, language), \
-    rating            = COALESCE($10, rating), \
-    age_rating        = COALESCE($11, age_rating), \
-    reading_direction = COALESCE($12, reading_direction), \
-    authors           = COALESCE($13, authors), \
-    tags              = COALESCE($14, tags), \
-    identifiers       = COALESCE($15, identifiers), \
-    updated_at = now()"
-    };
-}
-
-const UPDATE_BOOK_SQL: &str =
-    concat!("UPDATE books.books SET ", book_update_set!(), " WHERE id = $1 RETURNING id");
-
-const BULK_UPDATE_BOOKS_SQL: &str =
-    concat!("UPDATE books.books SET ", book_update_set!(), " WHERE id = ANY($1)");
-
-fn bind_book_update<'q>(
-    q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-    dto: &'q UpdateBookDto,
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    q.bind(&dto.title)
-        .bind(&dto.sort_title)
-        .bind(dto.series_index)
-        .bind(&dto.description)
-        .bind(&dto.publisher)
-        .bind(dto.published_date)
-        .bind(&dto.isbn)
-        .bind(&dto.language)
-        .bind(dto.rating)
-        .bind(dto.age_rating)
-        .bind(&dto.reading_direction)
-        .bind(&dto.authors)
-        .bind(&dto.tags)
-        .bind(&dto.identifiers)
+/// Pushes the shared `SET` body of the book update (fill-if-provided via
+/// COALESCE), binding each value. Does not include `updated_at` or the `WHERE`.
+fn push_book_update_set(qb: &mut DbQueryBuilder, dto: &UpdateBookDto) {
+    qb.push("title = COALESCE(").push_bind(dto.title.clone()).push(", title)");
+    qb.push(", sort_title = COALESCE(").push_bind(dto.sort_title.clone()).push(", sort_title)");
+    qb.push(", series_index = COALESCE(").push_bind(dto.series_index).push(", series_index)");
+    qb.push(", description = COALESCE(").push_bind(dto.description.clone()).push(", description)");
+    qb.push(", publisher = COALESCE(").push_bind(dto.publisher.clone()).push(", publisher)");
+    qb.push(", published_date = COALESCE(").push_bind(dto.published_date).push(", published_date)");
+    qb.push(", isbn = COALESCE(").push_bind(dto.isbn.clone()).push(", isbn)");
+    qb.push(", language = COALESCE(").push_bind(dto.language.clone()).push(", language)");
+    qb.push(", rating = COALESCE(").push_bind(dto.rating).push(", rating)");
+    qb.push(", age_rating = COALESCE(").push_bind(dto.age_rating).push(", age_rating)");
+    qb.push(", reading_direction = COALESCE(").push_bind(dto.reading_direction.clone()).push(", reading_direction)");
+    qb.push(", authors = COALESCE(").push_bind(dto.authors.clone()).push(", authors)");
+    qb.push(", tags = COALESCE(").push_bind(dto.tags.clone()).push(", tags)");
+    qb.push(", identifiers = COALESCE(").push_bind(dto.identifiers.clone()).push(", identifiers)");
 }
 
 pub async fn update_book(
@@ -313,12 +300,19 @@ pub async fn update_book(
     if user.role != "admin" {
         return Err(BooksError::Forbidden);
     }
-    let updated = bind_book_update(sqlx::query(UPDATE_BOOK_SQL).bind(id), &dto)
-        .fetch_optional(&state.db)
+    // Existence is decided by a reselect (portable: MySQL has no RETURNING).
+    let exists = state
+        .db
+        .fetch_optional_scalar::<Uuid>("SELECT id FROM books.books WHERE id = $1", params![id])
         .await?;
-    if updated.is_none() {
+    if exists.is_none() {
         return Err(BooksError::NotFound(format!("Livre {id}")));
     }
+    let mut qb = DbQueryBuilder::new(state.db.backend(), "UPDATE books.books SET ");
+    push_book_update_set(&mut qb, &dto);
+    qb.push(", updated_at = ").push_bind(Utc::now());
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.execute(&state.db).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -340,10 +334,11 @@ pub async fn bulk_update_books(
     if dto.ids.is_empty() {
         return Ok(Json(json!({ "updated": 0 })));
     }
-    let n = bind_book_update(sqlx::query(BULK_UPDATE_BOOKS_SQL).bind(&dto.ids), &dto.fields)
-        .execute(&state.db)
-        .await?
-        .rows_affected();
+    let mut qb = DbQueryBuilder::new(state.db.backend(), "UPDATE books.books SET ");
+    push_book_update_set(&mut qb, &dto.fields);
+    qb.push(", updated_at = ").push_bind(Utc::now());
+    qb.push(" WHERE id").push_in(dto.ids.iter().copied());
+    let n = qb.execute(&state.db).await?;
     Ok(Json(json!({ "updated": n })))
 }
 
@@ -370,37 +365,27 @@ pub async fn update_series(
     if user.role != "admin" {
         return Err(BooksError::Forbidden);
     }
-    let updated = sqlx::query(
-        "UPDATE books.series SET \
-           name              = COALESCE($2, name), \
-           sort_name         = COALESCE($3, sort_name), \
-           description       = COALESCE($4, description), \
-           publisher         = COALESCE($5, publisher), \
-           language          = COALESCE($6, language), \
-           age_rating        = COALESCE($7, age_rating), \
-           reading_direction = COALESCE($8, reading_direction), \
-           total_book_count  = COALESCE($9, total_book_count), \
-           genres            = COALESCE($10, genres), \
-           tags              = COALESCE($11, tags), \
-           updated_at = now() \
-         WHERE id = $1 RETURNING id",
-    )
-    .bind(id)
-    .bind(&dto.name)
-    .bind(&dto.sort_name)
-    .bind(&dto.description)
-    .bind(&dto.publisher)
-    .bind(&dto.language)
-    .bind(dto.age_rating)
-    .bind(&dto.reading_direction)
-    .bind(dto.total_book_count)
-    .bind(&dto.genres)
-    .bind(&dto.tags)
-    .fetch_optional(&state.db)
-    .await?;
-    if updated.is_none() {
+    let exists = state
+        .db
+        .fetch_optional_scalar::<Uuid>("SELECT id FROM books.series WHERE id = $1", params![id])
+        .await?;
+    if exists.is_none() {
         return Err(BooksError::NotFound(format!("Série {id}")));
     }
+    let mut qb = DbQueryBuilder::new(state.db.backend(), "UPDATE books.series SET ");
+    qb.push("name = COALESCE(").push_bind(dto.name.clone()).push(", name)");
+    qb.push(", sort_name = COALESCE(").push_bind(dto.sort_name.clone()).push(", sort_name)");
+    qb.push(", description = COALESCE(").push_bind(dto.description.clone()).push(", description)");
+    qb.push(", publisher = COALESCE(").push_bind(dto.publisher.clone()).push(", publisher)");
+    qb.push(", language = COALESCE(").push_bind(dto.language.clone()).push(", language)");
+    qb.push(", age_rating = COALESCE(").push_bind(dto.age_rating).push(", age_rating)");
+    qb.push(", reading_direction = COALESCE(").push_bind(dto.reading_direction.clone()).push(", reading_direction)");
+    qb.push(", total_book_count = COALESCE(").push_bind(dto.total_book_count).push(", total_book_count)");
+    qb.push(", genres = COALESCE(").push_bind(dto.genres.clone()).push(", genres)");
+    qb.push(", tags = COALESCE(").push_bind(dto.tags.clone()).push(", tags)");
+    qb.push(", updated_at = ").push_bind(Utc::now());
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.execute(&state.db).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -478,21 +463,13 @@ pub async fn apply_online_series_metadata(
         return Err(BooksError::Forbidden);
     }
     let genres = dto.genres.as_ref().map(|g| json!(g));
-    let n = sqlx::query(
-        "UPDATE books.series SET \
-           description = COALESCE($2, description), \
-           publisher   = COALESCE($3, publisher), \
-           genres      = COALESCE($4, genres), \
-           updated_at = now() \
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(&dto.description)
-    .bind(&dto.publisher)
-    .bind(&genres)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
+    let mut qb = DbQueryBuilder::new(state.db.backend(), "UPDATE books.series SET ");
+    qb.push("description = COALESCE(").push_bind(dto.description.clone()).push(", description)");
+    qb.push(", publisher = COALESCE(").push_bind(dto.publisher.clone()).push(", publisher)");
+    qb.push(", genres = COALESCE(").push_bind(genres).push(", genres)");
+    qb.push(", updated_at = ").push_bind(Utc::now());
+    qb.push(" WHERE id = ").push_bind(id);
+    let n = qb.execute(&state.db).await?;
     if n == 0 {
         return Err(BooksError::NotFound(format!("Série {id}")));
     }
@@ -570,31 +547,18 @@ pub async fn apply_online_metadata(
     let tags = dto.tags.as_ref().map(|t| json!(t));
     let date = dto.published_date.as_deref().and_then(parse_date_loose);
 
-    let n = sqlx::query(
-        "UPDATE books.books SET \
-           title          = COALESCE($2, title), \
-           publisher      = COALESCE($3, publisher), \
-           published_date = COALESCE($4, published_date), \
-           isbn           = COALESCE($5, isbn), \
-           description    = COALESCE($6, description), \
-           language       = COALESCE($7, language), \
-           authors        = COALESCE($8, authors), \
-           tags           = COALESCE($9, tags), \
-           updated_at = now() \
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(&dto.title)
-    .bind(&dto.publisher)
-    .bind(date)
-    .bind(&dto.isbn)
-    .bind(&dto.description)
-    .bind(&dto.language)
-    .bind(&authors)
-    .bind(&tags)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
+    let mut qb = DbQueryBuilder::new(state.db.backend(), "UPDATE books.books SET ");
+    qb.push("title = COALESCE(").push_bind(dto.title.clone()).push(", title)");
+    qb.push(", publisher = COALESCE(").push_bind(dto.publisher.clone()).push(", publisher)");
+    qb.push(", published_date = COALESCE(").push_bind(date).push(", published_date)");
+    qb.push(", isbn = COALESCE(").push_bind(dto.isbn.clone()).push(", isbn)");
+    qb.push(", description = COALESCE(").push_bind(dto.description.clone()).push(", description)");
+    qb.push(", language = COALESCE(").push_bind(dto.language.clone()).push(", language)");
+    qb.push(", authors = COALESCE(").push_bind(authors).push(", authors)");
+    qb.push(", tags = COALESCE(").push_bind(tags).push(", tags)");
+    qb.push(", updated_at = ").push_bind(Utc::now());
+    qb.push(" WHERE id = ").push_bind(id);
+    let n = qb.execute(&state.db).await?;
     if n == 0 {
         return Err(BooksError::NotFound(format!("Livre {id}")));
     }
@@ -617,6 +581,7 @@ pub struct ExportQuery {
 
 #[derive(Debug, sqlx::FromRow, serde::Serialize)]
 struct ExportRow {
+    id:             Uuid,
     title:          String,
     series_name:    Option<String>,
     series_index:   Option<f64>,
@@ -628,8 +593,14 @@ struct ExportRow {
     tags:           Value,
     rating:         Option<f64>,
     page_count:     Option<i32>,
+    #[sqlx(skip)]
     formats:        Vec<String>,
     added_at:       chrono::DateTime<chrono::Utc>,
+}
+
+impl formats::WithFormats for ExportRow {
+    fn book_id(&self) -> Uuid { self.id }
+    fn set_formats(&mut self, formats: Vec<String>) { self.formats = formats; }
 }
 
 fn csv_cell(s: &str) -> String {
@@ -664,26 +635,22 @@ pub async fn export_catalog(
 ) -> Result<axum::response::Response, BooksError> {
     use axum::{http::header, response::IntoResponse};
     // An export is a listing like any other: it goes through the same two rules.
-    // It used to check library visibility alone, which made it the widest hole
-    // of the module — one request returned the entire catalogue as a file.
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, ExportRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT b.title, s.name AS series_name, b.series_index, b.authors, b.publisher, \
-                b.published_date, b.isbn, b.language, b.tags, b.rating, b.page_count, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats, \
-                b.added_at \
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT b.id, b.title, s.name AS series_name, b.series_index, b.authors, b.publisher, \
+                b.published_date, b.isbn, b.language, b.tags, b.rating, b.page_count, b.added_at \
          FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         LEFT JOIN books.series s ON s.id = b.series_id \
-         WHERE {readable} AND ($2::uuid IS NULL OR b.library_id = $2) \
-         ORDER BY s.name NULLS LAST, b.series_index NULLS LAST, b.title"
-    )))
-    .bind(user.id)
-    .bind(q.library_id)
-    .fetch_all(&state.db)
-    .await?;
+         LEFT JOIN books.series s ON s.id = b.series_id WHERE ",
+    );
+    restriction.push_readable_book(&mut qb, user.id, block);
+    if let Some(lib) = q.library_id {
+        qb.push(" AND b.library_id = ").push_bind(lib);
+    }
+    qb.push_order_by("(s.name IS NULL), s.name, (b.series_index IS NULL), b.series_index, b.title");
+    let mut rows = qb.fetch_all_as::<ExportRow>(&state.db).await?;
+    formats::attach(&state.db, &mut rows).await?;
 
     if q.fmt.as_deref() == Some("json") {
         let body = serde_json::to_string(&json!({ "books": rows })).unwrap_or_else(|_| "{}".into());
@@ -728,22 +695,39 @@ pub async fn duplicates(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Value>, BooksError> {
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, (String, Value)>(sqlx::AssertSqlSafe(format!(
-        "SELECT bf.content_hash AS hash, \
-                jsonb_agg(DISTINCT jsonb_build_object('id', b.id, 'title', b.title)) AS books \
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    // Rows of (content_hash, book_id, title), grouped in Rust — jsonb_agg has no
+    // portable spelling. Only readable books participate.
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT bf.content_hash, b.id, b.title \
          FROM books.book_formats bf \
          JOIN books.books b ON b.id = bf.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE bf.content_hash IS NOT NULL AND {readable} \
-         GROUP BY bf.content_hash HAVING count(DISTINCT b.id) > 1"
-    )))
-    .bind(user.id)
-    .fetch_all(&state.db)
-    .await?;
-    let groups: Vec<_> = rows.iter().map(|(hash, books)| json!({ "hash": hash, "books": books })).collect();
+         WHERE bf.content_hash IS NOT NULL AND ",
+    );
+    restriction.push_readable_book(&mut qb, user.id, block);
+    let rows = qb
+        .fetch_all_as::<(String, Uuid, String)>(&state.db)
+        .await?;
+
+    // Group by hash, keep distinct books, emit only hashes shared by >1 book.
+    use std::collections::BTreeMap;
+    let mut by_hash: BTreeMap<String, Vec<(Uuid, String)>> = BTreeMap::new();
+    for (hash, id, title) in rows {
+        let entry = by_hash.entry(hash).or_default();
+        if !entry.iter().any(|(i, _)| *i == id) {
+            entry.push((id, title));
+        }
+    }
+    let groups: Vec<_> = by_hash
+        .into_iter()
+        .filter(|(_, books)| books.len() > 1)
+        .map(|(hash, books)| {
+            let books: Vec<_> = books.into_iter().map(|(id, title)| json!({ "id": id, "title": title })).collect();
+            json!({ "hash": hash, "books": books })
+        })
+        .collect();
     Ok(Json(json!({ "duplicates": groups })))
 }

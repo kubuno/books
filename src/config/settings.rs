@@ -1,6 +1,5 @@
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
@@ -23,30 +22,10 @@ pub struct CoreSettings {
     pub internal_secret: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct DatabaseSettings {
-    pub host:            String,
-    pub port:            u16,
-    pub user:            String,
-    pub password:        String,
-    pub database:        String,
-    pub max_connections: u32,
-    pub min_connections: u32,
-    #[serde(with = "duration_secs")]
-    pub connect_timeout: Duration,
-    pub run_migrations:  bool,
-}
-
-impl DatabaseSettings {
-    pub fn connect_options(&self) -> anyhow::Result<sqlx::postgres::PgConnectOptions> {
-        Ok(sqlx::postgres::PgConnectOptions::new()
-            .host(&self.host)
-            .port(self.port)
-            .username(&self.user)
-            .password(&self.password)
-            .database(&self.database))
-    }
-}
+/// The `[database]` section is owned by kubuno-db: which of its fields matter
+/// depends on the engine the administrator chooses at run time, and the pool is
+/// opened by `kubuno_db::connect`.
+pub use kubuno_db::DbSettings as DatabaseSettings;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageSettings {
@@ -78,46 +57,41 @@ impl Settings {
             .set_default("server.port", 3121i64)?
             .set_default("core.url", "http://127.0.0.1:8080")?
             .set_default("core.internal_secret", "")?
-            .set_default("database.host", "localhost")?
-            .set_default("database.port", 5432i64)?
-            .set_default("database.user", "kubuno")?
-            .set_default("database.password", "")?
-            .set_default("database.database", "kubuno")?
-            .set_default("database.max_connections", 10i64)?
-            .set_default("database.min_connections", 1i64)?
-            .set_default("database.connect_timeout", 10i64)?
+            .set_default("database.max_connections", 10u64)?
+            .set_default("database.min_connections", 1u64)?
+            .set_default("database.connect_timeout", 10u64)?
             .set_default("database.run_migrations", true)?
+            .set_default("database.engine", "postgres")?
+            // SQLite only: where `<schema>.sqlite` lives.
+            .set_default("database.path", "./data/db")?
             .set_default("storage.backend", "local")?
             .set_default("storage.local_path", "/var/lib/kubuno/modules/books/files")?
             .set_default("storage.temp_path", "/var/lib/kubuno/modules/books/tmp")?
             .set_default("logging.level", "info")?
             .set_default("logging.format", "pretty")?
             .add_source(File::with_name("config").required(false))
-            .add_source(File::with_name("/etc/kubuno/modules/books/config").required(false))
-            .add_source(
-                Environment::with_prefix("KB")
-                    .separator("__")
-                    .try_parsing(true),
-            );
+            .add_source(File::with_name("/etc/kubuno/modules/books/config").required(false));
 
-        if let Ok(v) = std::env::var("KUBUNO_CORE_URL")        { builder = builder.set_override("core.url",             v)?; }
-        if let Ok(v) = std::env::var("KUBUNO_INTERNAL_SECRET") { builder = builder.set_override("core.internal_secret", v)?; }
-        if let Ok(v) = std::env::var("KUBUNO_DB_HOST")         { builder = builder.set_override("database.host",     v)?; }
-        if let Ok(v) = std::env::var("KUBUNO_DB_PORT")         { builder = builder.set_override("database.port",     v.parse::<i64>().unwrap_or(5432))?; }
-        if let Ok(v) = std::env::var("KUBUNO_DB_USER")         { builder = builder.set_override("database.user",     v)?; }
-        if let Ok(v) = std::env::var("KUBUNO_DB_PASSWORD")     { builder = builder.set_override("database.password", v)?; }
-        if let Ok(v) = std::env::var("KUBUNO_DB_NAME")         { builder = builder.set_override("database.database", v)?; }
+        // Variables injected by the core supervisor — highest priority.
+        builder = builder
+            .set_override_option("core.url",             std::env::var("KUBUNO_CORE_URL").ok())?
+            .set_override_option("core.internal_secret", std::env::var("KUBUNO_INTERNAL_SECRET").ok())?
+            .set_override_option("database.host",     std::env::var("KUBUNO_DB_HOST").ok())?
+            .set_override_option("database.port",     std::env::var("KUBUNO_DB_PORT").ok()
+                                                        .and_then(|v| v.parse::<u64>().ok().map(|n| n.to_string())))?
+            .set_override_option("database.user",     std::env::var("KUBUNO_DB_USER").ok())?
+            .set_override_option("database.password", std::env::var("KUBUNO_DB_PASSWORD").ok())?
+            .set_override_option("database.database", std::env::var("KUBUNO_DB_NAME").ok())?
+            .set_override_option("database.path",     std::env::var("KUBUNO_DB_PATH").ok())?
+            .set_override_option("database.engine",   std::env::var("KUBUNO_DB_ENGINE").ok())?;
+
+        // Module environment variables (KB__).
+        builder = builder.add_source(
+            Environment::with_prefix("KB")
+                .separator("__")
+                .try_parsing(true),
+        );
 
         builder.build()?.try_deserialize()
-    }
-}
-
-mod duration_secs {
-    use serde::{Deserialize, Deserializer};
-    use std::time::Duration;
-    pub fn deserialize<'de, D>(d: D) -> Result<Duration, D::Error>
-    where D: Deserializer<'de> {
-        let secs = u64::deserialize(d)?;
-        Ok(Duration::from_secs(secs))
     }
 }

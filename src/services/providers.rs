@@ -1,5 +1,6 @@
 // Online metadata providers (free, no API key): OpenLibrary + Google Books. Used to enrich a
 // book's metadata ("download metadata"). Pure read-only outbound lookups.
+use kubuno_db::params;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -223,9 +224,10 @@ pub async fn download_series_cover(state: &AppState, series_id: uuid::Uuid, url:
 /// Auto-fill a series' presentation fields from the web (best-effort, fills empties only).
 /// Returns true if anything was applied. Used after a scan and by the manual refresh.
 pub async fn enrich_series(state: &AppState, series_id: uuid::Uuid) -> bool {
-    let Some((name, description, genres)) = sqlx::query_as::<_, (String, Option<String>, Value)>(
+    let Some((name, description, genres)) = state.db.fetch_optional_as::<(String, Option<String>, Value)>(
         "SELECT name, description, genres FROM books.series WHERE id = $1",
-    ).bind(series_id).fetch_optional(&state.db).await.ok().flatten() else { return false };
+        params![series_id],
+    ).await.ok().flatten() else { return false };
 
     let has_desc = description.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
     let has_genres = genres.as_array().map(|a| !a.is_empty()).unwrap_or(false);
@@ -233,28 +235,30 @@ pub async fn enrich_series(state: &AppState, series_id: uuid::Uuid) -> bool {
         return false; // already enriched
     }
 
-    // A sample member-book title helps disambiguate the series.
-    let hint = sqlx::query_scalar::<_, String>(
-        "SELECT title FROM books.books WHERE series_id = $1 ORDER BY series_index NULLS LAST, title LIMIT 1",
-    ).bind(series_id).fetch_optional(&state.db).await.ok().flatten();
+    // A sample member-book title helps disambiguate the series (portable NULLS LAST).
+    let hint = state.db.fetch_optional_scalar::<String>(
+        "SELECT title FROM books.books WHERE series_id = $1 ORDER BY (series_index IS NULL), series_index, title LIMIT 1",
+        params![series_id],
+    ).await.ok().flatten();
 
     let Some(best) = search_series(state, &name, hint.as_deref()).await.into_iter().next() else {
         return false;
     };
 
     let new_desc = if has_desc { description } else { best.description };
-    let new_genres = if has_genres || best.genres.is_empty() { genres } else { serde_json::json!(best.genres) };
-    let _ = sqlx::query(
-        "UPDATE books.series SET description = COALESCE($2, description), genres = $3, \
-         publisher = COALESCE(publisher, $4), updated_at = now() WHERE id = $1",
-    ).bind(series_id).bind(&new_desc).bind(&new_genres).bind(&best.publisher)
-     .execute(&state.db).await;
+    let new_genres: Value = if has_genres || best.genres.is_empty() { genres } else { serde_json::json!(best.genres) };
+    let _ = state.db.execute(
+        "UPDATE books.series SET description = COALESCE($1, description), genres = $2, \
+         publisher = COALESCE(publisher, $3), updated_at = $4 WHERE id = $5",
+        params![new_desc, new_genres, best.publisher, chrono::Utc::now(), series_id],
+    ).await;
 
     // Fetch a series artwork only when the books didn't already provide a cover.
     if let Some(url) = best.cover_url {
-        let has_cover = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
+        let has_cover = state.db.fetch_optional_as::<(Option<uuid::Uuid>,)>(
             "SELECT cover_format_id FROM books.series WHERE id = $1",
-        ).bind(series_id).fetch_optional(&state.db).await.ok().flatten().flatten().is_some();
+            params![series_id],
+        ).await.ok().flatten().and_then(|r| r.0).is_some();
         let has_custom = state.storage.get(&format!("cache/cover/custom_series_{series_id}.jpg")).await.is_ok();
         if !has_cover && !has_custom {
             download_series_cover(state, series_id, &url).await;
@@ -265,10 +269,11 @@ pub async fn enrich_series(state: &AppState, series_id: uuid::Uuid) -> bool {
 
 /// Enrich every series of a library that still lacks a description (background, best-effort).
 pub async fn enrich_library_series(state: &AppState, library_id: uuid::Uuid) {
-    let ids = sqlx::query_scalar::<_, uuid::Uuid>(
+    let ids = state.db.fetch_all_as::<(uuid::Uuid,)>(
         "SELECT id FROM books.series WHERE library_id = $1 AND (description IS NULL OR description = '')",
-    ).bind(library_id).fetch_all(&state.db).await.unwrap_or_default();
-    for id in ids {
+        params![library_id],
+    ).await.unwrap_or_default();
+    for (id,) in ids {
         let _ = enrich_series(state, id).await;
     }
 }

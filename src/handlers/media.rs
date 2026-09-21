@@ -7,12 +7,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
+use kubuno_db::{dialect::Assign, new_id, params, DbQueryBuilder};
 use uuid::Uuid;
 
 use crate::{
     errors::BooksError,
     middleware::auth::AuthUser,
-    services::{access, decode},
+    services::{
+        access::{self, Restriction},
+        decode,
+    },
     state::AppState,
 };
 
@@ -40,26 +44,23 @@ fn resolve_path(state: &AppState, fmt: &Fmt) -> Result<std::path::PathBuf, Books
 ///
 /// This is the choke point of the whole reading surface — covers, page counts,
 /// page images and the raw stream all pass through it — which is why the full
-/// access rule belongs here and not only in the listings. The reader is bound at
-/// `$2`, hence the placeholder passed to `access`.
+/// access rule belongs here and not only in the listings.
 async fn visible_format(state: &AppState, user_id: Uuid, format_id: Uuid) -> Result<Fmt, BooksError> {
-    let readable = access::readable_book("$2", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    sqlx::query_as::<_, (String, String, Option<String>, Uuid)>(sqlx::AssertSqlSafe(format!(
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user_id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
         "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id \
          FROM books.book_formats bf \
          JOIN books.books b ON b.id = bf.book_id \
-         JOIN books.libraries l ON l.id = b.library_id \
-         WHERE bf.id = $1 AND {readable}"
-    )))
-    .bind(format_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .map(|(format, storage_path, local_cache_path, owner_id)| Fmt { format, storage_path, local_cache_path, owner_id })
-    .ok_or_else(|| BooksError::NotFound("Format introuvable".into()))
+         JOIN books.libraries l ON l.id = b.library_id WHERE bf.id = ",
+    );
+    qb.push_bind(format_id).push(" AND ");
+    restriction.push_readable_book(&mut qb, user_id, block);
+    qb.fetch_optional_as::<(String, String, Option<String>, Uuid)>(&state.db)
+        .await?
+        .map(|(format, storage_path, local_cache_path, owner_id)| Fmt { format, storage_path, local_cache_path, owner_id })
+        .ok_or_else(|| BooksError::NotFound("Format introuvable".into()))
 }
 
 async fn cover_format_of(
@@ -69,30 +70,29 @@ async fn cover_format_of(
     id: Uuid,
 ) -> Result<Uuid, BooksError> {
     // `table` is `books` or `series`, chosen by the caller from two literals.
-    // The rating a cover is judged on has to be the SAME one the listing used,
-    // or a series hidden from the list would still hand out its artwork to
-    // anybody who guessed the id — which is how a "hidden" shelf gets browsed.
-    let rating = if table == "series" {
-        access::series_effective_rating("t")
+    // The rating a cover is judged on has to be the SAME one the listing used.
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user_id).await?;
+    let rating_expr: &'static str = if table == "series" {
+        access::SERIES_RATING_EXPR_T
     } else {
-        "t.age_rating".to_string()
+        "t.age_rating"
     };
-    let allowed = access::content_allowed("$2", &rating, state.instance().block_unrated_sql());
-    let visible = access::visible_library("$2");
-    // Audited: `table` is `&'static str` — the four call sites pass the literals
-    // "books" and "series" — and both predicates come from `services::access`,
-    // which splices `&'static str` only. The id and the reader stay bound.
-    let sql = format!(
-        "SELECT t.cover_format_id FROM books.{table} t \
-         JOIN books.libraries l ON l.id = t.library_id \
-         WHERE t.id = $1 AND {visible} AND {allowed}"
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        format!(
+            "SELECT t.cover_format_id FROM books.{table} t \
+             JOIN books.libraries l ON l.id = t.library_id WHERE t.id = "
+        ),
     );
-    sqlx::query_scalar::<_, Option<Uuid>>(sqlx::AssertSqlSafe(sql))
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(&state.db)
+    qb.push_bind(id).push(" AND ");
+    restriction.push_visible_library(&mut qb, user_id);
+    qb.push(" AND ");
+    restriction.push_age(&mut qb, rating_expr, block);
+    qb.fetch_optional_as::<(Option<Uuid>,)>(&state.db)
         .await?
         .ok_or_else(|| BooksError::NotFound("Ressource introuvable".into()))?
+        .0
         .ok_or_else(|| BooksError::NotFound("Couverture indisponible".into()))
 }
 
@@ -103,15 +103,16 @@ async fn render_cover(state: &AppState, fmt: &Fmt, format_id: Uuid) -> Result<By
         return Ok(cached);
     }
     // Library cover options: which page is the cover + thumbnail width.
-    let settings = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT l.settings FROM books.book_formats bf \
-         JOIN books.books b ON b.id = bf.book_id JOIN books.libraries l ON l.id = b.library_id \
-         WHERE bf.id = $1",
-    )
-    .bind(format_id)
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or_else(|| serde_json::json!({}));
+    let settings = state
+        .db
+        .fetch_optional_scalar::<serde_json::Value>(
+            "SELECT l.settings FROM books.book_formats bf \
+             JOIN books.books b ON b.id = bf.book_id JOIN books.libraries l ON l.id = b.library_id \
+             WHERE bf.id = $1",
+            params![format_id],
+        )
+        .await?
+        .unwrap_or_else(|| serde_json::json!({}));
     let cover_page = settings.pointer("/options/cover_page").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let thumb_w = settings.pointer("/options/thumbnail_width").and_then(|v| v.as_u64()).unwrap_or(480).clamp(120, 1200) as u32;
 
@@ -170,21 +171,17 @@ pub async fn series_cover(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, BooksError> {
-    // A downloaded series artwork (from online enrichment) wins over a book-derived
-    // cover — but only once we've confirmed the series is visible to the user.
-    let readable = access::readable_series("$2", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let visible = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(format!(
-        "SELECT EXISTS(SELECT 1 FROM books.series s JOIN books.libraries l ON l.id = s.library_id \
-         WHERE s.id = $1 AND {readable})"
-    )))
-    .bind(id)
-    .bind(user.id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    // A downloaded series artwork wins over a book-derived cover — but only once
+    // we've confirmed the series is visible to the user.
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT s.id FROM books.series s JOIN books.libraries l ON l.id = s.library_id WHERE s.id = ",
+    );
+    qb.push_bind(id).push(" AND ");
+    restriction.push_readable_series(&mut qb, user.id, block);
+    let visible = qb.fetch_optional_scalar::<Uuid>(&state.db).await.unwrap_or(None).is_some();
     if visible {
         if let Ok(custom) = state.storage.get(&format!("cache/cover/custom_series_{id}.jpg")).await {
             return Ok(image_response("image/jpeg", custom, true));
@@ -207,11 +204,22 @@ pub async fn book_page_count(
     let path = resolve_path(&state, &fmt)?;
 
     // Library option: index per-page dimensions (once).
-    let already: bool = sqlx::query_scalar("SELECT pages_indexed FROM books.book_formats WHERE id = $1")
-        .bind(fmt_id).fetch_optional(&state.db).await?.unwrap_or(false);
-    let settings = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT l.settings FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE b.id = $1",
-    ).bind(id).fetch_optional(&state.db).await?.unwrap_or_else(|| serde_json::json!({}));
+    let already: bool = state
+        .db
+        .fetch_optional_scalar::<bool>(
+            "SELECT pages_indexed FROM books.book_formats WHERE id = $1",
+            params![fmt_id],
+        )
+        .await?
+        .unwrap_or(false);
+    let settings = state
+        .db
+        .fetch_optional_scalar::<serde_json::Value>(
+            "SELECT l.settings FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE b.id = $1",
+            params![id],
+        )
+        .await?
+        .unwrap_or_else(|| serde_json::json!({}));
     let analyze = settings.pointer("/options/analyze_dimensions").and_then(|v| v.as_bool()).unwrap_or(true);
 
     let format = fmt.format.clone();
@@ -239,23 +247,36 @@ pub async fn book_page_count(
     .map_err(|e| BooksError::Internal(anyhow::anyhow!(e)))??;
     let count = count as i32;
 
+    // Persist per-page dimensions (upsert; MySQL has no RETURNING, no need here).
+    let page_upsert = state
+        .db
+        .backend()
+        .upsert("books.pages", &["format_id", "idx"], &[Assign::Incoming("width"), Assign::Incoming("height")]);
     for (idx, w, h) in &dims {
-        let _ = sqlx::query(
-            "INSERT INTO books.pages (format_id, idx, width, height) VALUES ($1,$2,$3,$4) \
-             ON CONFLICT (format_id, idx) DO UPDATE SET width = $3, height = $4",
-        )
-        .bind(fmt_id).bind(idx).bind(w).bind(h).execute(&state.db).await;
+        let _ = state
+            .db
+            .execute(
+                &format!(
+                    "INSERT INTO books.pages (id, format_id, idx, width, height) VALUES ($1,$2,$3,$4,$5){page_upsert}"
+                ),
+                params![new_id(), fmt_id, *idx, *w, *h],
+            )
+            .await;
     }
 
-    sqlx::query("UPDATE books.book_formats SET page_count = $2, pages_indexed = TRUE WHERE id = $1")
-        .bind(fmt_id)
-        .bind(count)
-        .execute(&state.db)
+    state
+        .db
+        .execute(
+            "UPDATE books.book_formats SET page_count = $1, pages_indexed = TRUE WHERE id = $2",
+            params![count, fmt_id],
+        )
         .await?;
-    sqlx::query("UPDATE books.books SET page_count = $2 WHERE id = $1 AND (page_count IS NULL OR page_count = 0)")
-        .bind(id)
-        .bind(count)
-        .execute(&state.db)
+    state
+        .db
+        .execute(
+            "UPDATE books.books SET page_count = $1 WHERE id = $2 AND (page_count IS NULL OR page_count = 0)",
+            params![count, id],
+        )
         .await?;
     Ok(axum::Json(serde_json::json!({ "page_count": count })))
 }
@@ -318,28 +339,25 @@ pub async fn book_download(
     Path(id): Path<Uuid>,
 ) -> Result<Response, BooksError> {
     // Instance policy: reading in the browser and taking the file away are two
-    // different permissions. Closing this one leaves the reader untouched — the
-    // page images keep being served — and only stops the file from leaving.
+    // different permissions.
     let inst = state.instance();
     if !inst.allow_downloads {
         return Err(BooksError::Forbidden);
     }
 
-    let readable = access::readable_book("$2", inst.block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let (format, storage_path, local_cache_path, owner_id, file_name) = sqlx::query_as::<_, (String, String, Option<String>, Uuid, String)>(sqlx::AssertSqlSafe(format!(
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
         "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id, bf.file_name \
          FROM books.books b JOIN books.book_formats bf ON bf.id = b.cover_format_id \
-         JOIN books.libraries l ON l.id = b.library_id \
-         WHERE b.id = $1 AND {readable}"
-    )))
-    .bind(id)
-    .bind(user.id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| BooksError::NotFound(format!("Livre {id}")))?;
+         JOIN books.libraries l ON l.id = b.library_id WHERE b.id = ",
+    );
+    qb.push_bind(id).push(" AND ");
+    restriction.push_readable_book(&mut qb, user.id, inst.block_unrated);
+    let (format, storage_path, local_cache_path, owner_id, file_name) = qb
+        .fetch_optional_as::<(String, String, Option<String>, Uuid, String)>(&state.db)
+        .await?
+        .ok_or_else(|| BooksError::NotFound(format!("Livre {id}")))?;
 
     let fmt_tmp = Fmt { format: format.clone(), storage_path, local_cache_path, owner_id };
     let path = resolve_path(&state, &fmt_tmp)?;

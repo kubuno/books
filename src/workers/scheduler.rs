@@ -3,6 +3,7 @@
 // libraries whose interval is due.
 use std::time::Duration;
 
+use kubuno_db::params;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -31,12 +32,14 @@ pub fn spawn(state: AppState) {
 }
 
 async fn startup_scans(state: &AppState) {
-    let rows = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
-        "SELECT id, settings FROM books.libraries WHERE source_type = 'files_folder'",
-    )
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let rows = state
+        .db
+        .fetch_all_as::<(Uuid, serde_json::Value)>(
+            "SELECT id, settings FROM books.libraries WHERE source_type = 'files_folder'",
+            params![],
+        )
+        .await
+        .unwrap_or_default();
     for (id, s) in rows {
         if s.pointer("/scanner/scan_on_startup").and_then(|v| v.as_bool()).unwrap_or(false) {
             trigger(state, id).await;
@@ -45,12 +48,14 @@ async fn startup_scans(state: &AppState) {
 }
 
 async fn interval_scans(state: &AppState) {
-    let rows = sqlx::query_as::<_, (Uuid, serde_json::Value, Option<chrono::DateTime<chrono::Utc>>, String)>(
-        "SELECT id, settings, last_scan_at, scan_status FROM books.libraries WHERE source_type = 'files_folder'",
-    )
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let rows = state
+        .db
+        .fetch_all_as::<(Uuid, serde_json::Value, Option<chrono::DateTime<chrono::Utc>>, String)>(
+            "SELECT id, settings, last_scan_at, scan_status FROM books.libraries WHERE source_type = 'files_folder'",
+            params![],
+        )
+        .await
+        .unwrap_or_default();
     let now = chrono::Utc::now();
     for (id, s, last, status) in rows {
         if status == "scanning" {
@@ -70,9 +75,12 @@ async fn interval_scans(state: &AppState) {
 }
 
 async fn trigger(state: &AppState, id: Uuid) {
-    let _ = sqlx::query("UPDATE books.libraries SET scan_status = 'scanning', scan_error = NULL WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
+    let _ = state
+        .db
+        .execute(
+            "UPDATE books.libraries SET scan_status = 'scanning', scan_error = NULL WHERE id = $1",
+            params![id],
+        )
         .await;
     let st = state.clone();
     tokio::spawn(async move { crate::services::scan::scan_library(st, id).await });

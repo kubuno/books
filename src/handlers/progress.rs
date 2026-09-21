@@ -3,11 +3,17 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use kubuno_db::{dialect::Assign, params, DbQueryBuilder};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{errors::BooksError, middleware::auth::AuthUser, services::access, state::AppState};
+use crate::{
+    errors::BooksError,
+    middleware::auth::AuthUser,
+    services::{access::Restriction, formats},
+    state::AppState,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ProgressDto {
@@ -17,20 +23,18 @@ pub struct ProgressDto {
 }
 
 async fn book_visible(state: &AppState, user_id: Uuid, book_id: Uuid) -> Result<(), BooksError> {
-    let readable = access::readable_book("$2", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    sqlx::query_scalar::<_, Uuid>(sqlx::AssertSqlSafe(format!(
-        "SELECT b.id FROM books.books b JOIN books.libraries l ON l.id = b.library_id \
-         WHERE b.id = $1 AND {readable}"
-    )))
-    .bind(book_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .map(|_| ())
-    .ok_or_else(|| BooksError::NotFound(format!("Livre {book_id}")))
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user_id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
+        "SELECT b.id FROM books.books b JOIN books.libraries l ON l.id = b.library_id WHERE b.id = ",
+    );
+    qb.push_bind(book_id).push(" AND ");
+    restriction.push_readable_book(&mut qb, user_id, block);
+    qb.fetch_optional_scalar::<Uuid>(&state.db)
+        .await?
+        .map(|_| ())
+        .ok_or_else(|| BooksError::NotFound(format!("Livre {book_id}")))
 }
 
 pub async fn get_progress(
@@ -38,13 +42,13 @@ pub async fn get_progress(
     Extension(user): Extension<AuthUser>,
     Path(book_id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
-    let row = sqlx::query_as::<_, (i32, Option<String>, bool)>(
-        "SELECT page, location, completed FROM books.read_progress WHERE user_id = $1 AND book_id = $2",
-    )
-    .bind(user.id)
-    .bind(book_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row = state
+        .db
+        .fetch_optional_as::<(i32, Option<String>, bool)>(
+            "SELECT page, location, completed FROM books.read_progress WHERE user_id = $1 AND book_id = $2",
+            params![user.id, book_id],
+        )
+        .await?;
     Ok(match row {
         Some((page, location, completed)) => Json(json!({ "page": page, "location": location, "completed": completed })),
         None => Json(json!({ "page": 0, "location": null, "completed": false })),
@@ -58,22 +62,37 @@ pub async fn put_progress(
     Json(dto): Json<ProgressDto>,
 ) -> Result<Json<Value>, BooksError> {
     book_visible(&state, user.id, book_id).await?;
-    sqlx::query(
-        "INSERT INTO books.read_progress (user_id, book_id, page, location, completed) \
-         VALUES ($1, $2, COALESCE($3, 0), $4, COALESCE($5, false)) \
-         ON CONFLICT (user_id, book_id) DO UPDATE SET \
-           page      = COALESCE($3, books.read_progress.page), \
-           location  = COALESCE($4, books.read_progress.location), \
-           completed = COALESCE($5, books.read_progress.completed), \
-           updated_at = now()",
-    )
-    .bind(user.id)
-    .bind(book_id)
-    .bind(dto.page)
-    .bind(dto.location)
-    .bind(dto.completed)
-    .execute(&state.db)
-    .await?;
+
+    // Merge with the existing progress in Rust: a field left out keeps its value
+    // (the portable form of the old `COALESCE($n, read_progress.col)` on the
+    // conflict branch — an upsert cannot re-read the stored row per column).
+    let existing = state
+        .db
+        .fetch_optional_as::<(i32, Option<String>, bool)>(
+            "SELECT page, location, completed FROM books.read_progress WHERE user_id = $1 AND book_id = $2",
+            params![user.id, book_id],
+        )
+        .await?;
+    let (cur_page, cur_loc, cur_done) = existing.unwrap_or((0, None, false));
+    let page = dto.page.unwrap_or(cur_page);
+    let location = dto.location.or(cur_loc);
+    let completed = dto.completed.unwrap_or(cur_done);
+
+    let upsert = state.db.backend().upsert(
+        "books.read_progress",
+        &["user_id", "book_id"],
+        &[Assign::Incoming("page"), Assign::Incoming("location"), Assign::Incoming("completed"), Assign::Incoming("updated_at")],
+    );
+    state
+        .db
+        .execute(
+            &format!(
+                "INSERT INTO books.read_progress (user_id, book_id, page, location, completed, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6){upsert}"
+            ),
+            params![user.id, book_id, page, location, completed, Utc::now()],
+        )
+        .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -83,21 +102,31 @@ pub async fn mark_read(
     Path(book_id): Path<Uuid>,
 ) -> Result<Json<Value>, BooksError> {
     book_visible(&state, user.id, book_id).await?;
-    let last = sqlx::query_scalar::<_, Option<i32>>("SELECT page_count FROM books.books WHERE id = $1")
-        .bind(book_id)
-        .fetch_one(&state.db)
+    let last = state
+        .db
+        .fetch_one_as::<(Option<i32>,)>(
+            "SELECT page_count FROM books.books WHERE id = $1",
+            params![book_id],
+        )
         .await?
+        .0
         .map(|c| (c - 1).max(0))
         .unwrap_or(0);
-    sqlx::query(
-        "INSERT INTO books.read_progress (user_id, book_id, page, completed) VALUES ($1, $2, $3, true) \
-         ON CONFLICT (user_id, book_id) DO UPDATE SET page = $3, completed = true, updated_at = now()",
-    )
-    .bind(user.id)
-    .bind(book_id)
-    .bind(last)
-    .execute(&state.db)
-    .await?;
+    let upsert = state.db.backend().upsert(
+        "books.read_progress",
+        &["user_id", "book_id"],
+        &[Assign::Incoming("page"), Assign::Incoming("completed"), Assign::Incoming("updated_at")],
+    );
+    state
+        .db
+        .execute(
+            &format!(
+                "INSERT INTO books.read_progress (user_id, book_id, page, completed, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5){upsert}"
+            ),
+            params![user.id, book_id, last, true, Utc::now()],
+        )
+        .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -109,10 +138,12 @@ pub async fn mark_unread(
     // The other progress routes check first; this one did not, which let a
     // reader poke at rows for books they were never allowed to see.
     book_visible(&state, user.id, book_id).await?;
-    sqlx::query("DELETE FROM books.read_progress WHERE user_id = $1 AND book_id = $2")
-        .bind(user.id)
-        .bind(book_id)
-        .execute(&state.db)
+    state
+        .db
+        .execute(
+            "DELETE FROM books.read_progress WHERE user_id = $1 AND book_id = $2",
+            params![user.id, book_id],
+        )
         .await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -131,9 +162,15 @@ struct KeepItem {
     series_index:      Option<f64>,
     page_count:        Option<i32>,
     cover_format_id:   Option<Uuid>,
+    #[sqlx(skip)]
     formats:           Vec<String>,
     progress_page:     i32,
     progress_updated:  DateTime<Utc>,
+}
+
+impl formats::WithFormats for KeepItem {
+    fn book_id(&self) -> Uuid { self.id }
+    fn set_formats(&mut self, formats: Vec<String>) { self.formats = formats; }
 }
 
 /// Books in progress (not finished) — "Keep reading".
@@ -143,24 +180,23 @@ pub async fn keep_reading(
     Query(q): Query<KeepQuery>,
 ) -> Result<Json<Value>, BooksError> {
     let limit = q.limit.unwrap_or(24).clamp(1, 100);
-    let readable = access::readable_book("$1", state.instance().block_unrated_sql());
-    // Audited: the only text spliced in is the access predicate, which
-    // `services::access` builds from `&'static str` arguments alone. Every value
-    // a request carries stays bound.
-    let rows = sqlx::query_as::<_, KeepItem>(sqlx::AssertSqlSafe(format!(
+    let block = state.instance().block_unrated;
+    let restriction = Restriction::load(&state.db, user.id).await?;
+    let mut qb = DbQueryBuilder::new(
+        state.db.backend(),
         "SELECT b.id, b.library_id, b.series_id, b.title, b.series_index, b.page_count, b.cover_format_id, \
-                COALESCE(ARRAY(SELECT f.format FROM books.book_formats f WHERE f.book_id = b.id ORDER BY f.format), '{{}}') AS formats, \
                 rp.page AS progress_page, rp.updated_at AS progress_updated \
          FROM books.read_progress rp \
          JOIN books.books b ON b.id = rp.book_id \
          JOIN books.libraries l ON l.id = b.library_id \
-         WHERE rp.user_id = $1 AND rp.completed = false AND (rp.page > 0 OR rp.location IS NOT NULL) \
-           AND {readable} \
-         ORDER BY rp.updated_at DESC LIMIT $2"
-    )))
-    .bind(user.id)
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await?;
+         WHERE rp.user_id = ",
+    );
+    qb.push_bind(user.id);
+    qb.push(" AND rp.completed = FALSE AND (rp.page > 0 OR rp.location IS NOT NULL) AND ");
+    restriction.push_readable_book(&mut qb, user.id, block);
+    qb.push_order_by("rp.updated_at DESC");
+    qb.push_limit_offset(limit, 0);
+    let mut rows = qb.fetch_all_as::<KeepItem>(&state.db).await?;
+    formats::attach(&state.db, &mut rows).await?;
     Ok(Json(json!({ "books": rows })))
 }

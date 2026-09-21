@@ -60,6 +60,11 @@ pub struct Book {
     pub updated_at:        DateTime<Utc>,
 }
 
+impl crate::services::formats::WithFormats for BookListItem {
+    fn book_id(&self) -> Uuid { self.id }
+    fn set_formats(&mut self, formats: Vec<String>) { self.formats = formats; }
+}
+
 /// A book row enriched with its format codes (for list views).
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct BookListItem {
@@ -72,6 +77,9 @@ pub struct BookListItem {
     pub page_count:      Option<i32>,
     pub cover_format_id: Option<Uuid>,
     pub added_at:        DateTime<Utc>,
+    /// Format codes (cbz/pdf/…), attached in Rust after the row is read —
+    /// aggregating them portably in SQL is not worth a per-engine agg function.
+    #[sqlx(skip)]
     pub formats:         Vec<String>,
 }
 
@@ -81,7 +89,8 @@ pub struct BookFormat {
     pub book_id:          Uuid,
     pub owner_id:         Uuid,
     pub format:           String,
-    pub file_id:          Uuid,
+    /// NULL for a remote-mount format (no drive file backs it).
+    pub file_id:          Option<Uuid>,
     pub file_name:        String,
     pub storage_path:     String,
     pub size_bytes:       i64,

@@ -1,6 +1,7 @@
 // Apply embedded metadata (ComicInfo.xml / EPUB OPF) onto a book, filling EMPTY fields only so
 // user edits are never clobbered. EPUB titles do replace the filename-derived title (much better).
-use serde_json::json;
+use kubuno_db::params;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{errors::BooksError, services::decode, state::AppState};
@@ -9,17 +10,28 @@ fn fmt_num(n: f64) -> String {
     if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") }
 }
 
+/// Whether a JSON value is an empty array (`[]`) or absent — the state that lets
+/// embedded metadata fill `authors` / `tags`.
+fn is_empty_json_array(v: &Value) -> bool {
+    v.as_array().map(|a| a.is_empty()).unwrap_or(true)
+}
+
 pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, BooksError> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>, Uuid, serde_json::Value)>(
-        "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id, l.settings \
-         FROM books.book_formats bf \
-         JOIN books.books b ON b.cover_format_id = bf.id \
-         JOIN books.libraries l ON l.id = b.library_id WHERE b.id = $1",
-    )
-    .bind(book_id)
-    .fetch_optional(&state.db)
-    .await?;
-    let Some((format, storage_path, local_cache_path, owner_id, settings)) = row else { return Ok(false) };
+    let row = state
+        .db
+        .fetch_optional_as::<(String, String, Option<String>, Uuid, Value, Value, Value)>(
+            "SELECT bf.format, bf.storage_path, bf.local_cache_path, bf.owner_id, l.settings, \
+                    b.authors, b.tags \
+             FROM books.book_formats bf \
+             JOIN books.books b ON b.cover_format_id = bf.id \
+             JOIN books.libraries l ON l.id = b.library_id WHERE b.id = $1",
+            params![book_id],
+        )
+        .await?;
+    let Some((format, storage_path, local_cache_path, owner_id, settings, cur_authors, cur_tags)) = row
+    else {
+        return Ok(false);
+    };
 
     // Respect the library's granular import flags.
     let getb = |ptr: &str, def: bool| settings.pointer(ptr).and_then(|v| v.as_bool()).unwrap_or(def);
@@ -82,36 +94,51 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
     // never overwritten by a rescan.
     let age_rating = state.instance().import_age_rating.then_some(m.age_rating).flatten();
 
-    sqlx::query(
-        "UPDATE books.books SET \
-           description       = COALESCE(description, $2), \
-           publisher         = COALESCE(publisher, $3), \
-           published_date    = COALESCE(published_date, $4), \
-           language          = COALESCE(language, $5), \
-           isbn              = COALESCE(isbn, $6), \
-           authors           = CASE WHEN authors = '[]'::jsonb AND $7::jsonb IS NOT NULL THEN $7 ELSE authors END, \
-           tags              = CASE WHEN tags = '[]'::jsonb AND $8::jsonb IS NOT NULL THEN $8 ELSE tags END, \
-           series_index      = COALESCE(series_index, $9), \
-           reading_direction = COALESCE(reading_direction, $10), \
-           title             = CASE WHEN $11::text IS NOT NULL THEN $11 ELSE title END, \
-           age_rating        = COALESCE(age_rating, $12), \
-           updated_at = now() \
-         WHERE id = $1",
-    )
-    .bind(book_id)
-    .bind(description)
-    .bind(publisher)
-    .bind(pub_date)
-    .bind(language)
-    .bind(isbn)
-    .bind(&authors)
-    .bind(&tags)
-    .bind(series_index)
-    .bind(rdir)
-    .bind(title_override)
-    .bind(age_rating)
-    .execute(&state.db)
-    .await?;
+    // Fill authors/tags only when the stored value is empty; decided in Rust so
+    // the statement stays a plain assignment (no per-engine JSON comparison).
+    let new_authors: Value = match authors {
+        Some(a) if is_empty_json_array(&cur_authors) => a,
+        _ => cur_authors,
+    };
+    let new_tags: Value = match tags {
+        Some(t) if is_empty_json_array(&cur_tags) => t,
+        _ => cur_tags,
+    };
+
+    state
+        .db
+        .execute(
+            "UPDATE books.books SET \
+               description       = COALESCE(description, $1), \
+               publisher         = COALESCE(publisher, $2), \
+               published_date    = COALESCE(published_date, $3), \
+               language          = COALESCE(language, $4), \
+               isbn              = COALESCE(isbn, $5), \
+               authors           = $6, \
+               tags              = $7, \
+               series_index      = COALESCE(series_index, $8), \
+               reading_direction = COALESCE(reading_direction, $9), \
+               title             = COALESCE($10, title), \
+               age_rating        = COALESCE(age_rating, $11), \
+               updated_at        = $12 \
+             WHERE id = $13",
+            params![
+                description,
+                publisher,
+                pub_date,
+                language,
+                isbn,
+                new_authors,
+                new_tags,
+                series_index,
+                rdir,
+                title_override,
+                age_rating,
+                chrono::Utc::now(),
+                book_id,
+            ],
+        )
+        .await?;
     Ok(true)
 }
 
@@ -125,14 +152,19 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
 /// most files carry no rating at all and would stay selected. Existing books are
 /// rated from the metadata editor instead.
 pub async fn import_library(state: &AppState, library_id: Uuid) {
-    let ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM books.books WHERE library_id = $1 AND description IS NULL AND authors = '[]'::jsonb",
-    )
-    .bind(library_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
-    for id in ids {
-        let _ = apply_embedded(state, id).await;
+    // "Never enriched at all": no description and an empty authors array. The
+    // empty-array test is done in Rust (JSON `=` has no portable spelling).
+    let rows = state
+        .db
+        .fetch_all_as::<(Uuid, Value)>(
+            "SELECT id, authors FROM books.books WHERE library_id = $1 AND description IS NULL",
+            params![library_id],
+        )
+        .await
+        .unwrap_or_default();
+    for (id, authors) in rows {
+        if is_empty_json_array(&authors) {
+            let _ = apply_embedded(state, id).await;
+        }
     }
 }
