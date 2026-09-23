@@ -27,6 +27,10 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Security
 
+- **Security fixes from the shared database layer (kubuno-db 0.9.0).** The
+  database password can no longer appear in a log through the debug output of
+  the database settings.
+
 - **7-zip reader replaced by its maintained successor.** Comic archives in the
   CB7 format were read by a library whose repository has been deleted and which
   will never be fixed (RUSTSEC-2026-0245 path traversal, RUSTSEC-2026-0246
