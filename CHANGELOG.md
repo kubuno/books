@@ -60,6 +60,13 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Fixed
 
+- **The library installs on Oracle MySQL 8.** Its schema migration gave a
+  `TEXT` column a literal default, which MariaDB accepts but MySQL 8 refuses
+  (error 1101), so the module could not start on MySQL. On Oracle MySQL a variant
+  of that migration (`migrations/mysql-oracle/`) now declares the same default as
+  an expression; MariaDB keeps running the original file. Both are recorded under
+  the original checksum, so a database that already applied it is unaffected.
+
 - **Database migrations keep the same checksum on every OS.** The repository now
   pins line endings to LF (`.gitattributes`), so a checkout on Windows no longer
   turns SQL migrations, scripts, manifests or sources into CRLF. A database
