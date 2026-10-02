@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, MenuDropdown, useMenuDropdown, type MenuItem } from '@ui'
-import { formatSize, useAuthStore, useImageCacheStore } from '@kubuno/sdk'
+import { formatSize, useAuthStore, useImageCacheStore, useSignedUrl, downloadSignedUrl } from '@kubuno/sdk'
 import {
   BookOpen,
   FileText,
@@ -98,6 +98,9 @@ export default function BookPage() {
     enabled: !!id,
   })
 
+  // Signed cover ticket (undefined while it is being fetched).
+  const coverSrc = useSignedUrl(id ? `${bookCoverUrl(id)}?v=${cacheVer}` : null)
+
   const invalidateProgress = () => {
     void queryClient.invalidateQueries({ queryKey: ['books', 'progress', id] })
     void queryClient.invalidateQueries({ queryKey: ['books', 'keep-reading'] })
@@ -127,8 +130,6 @@ export default function BookPage() {
     ...(series ? [{ label: series.name, to: `/books/series/${series.id}` }] : []),
     { label: book.title },
   ]
-
-  const coverSrc = `${bookCoverUrl(book.id)}?v=${cacheVer}`
 
   const readListItems: MenuItem[] = [
     ...(readLists ?? []).map(
@@ -167,7 +168,7 @@ export default function BookPage() {
         {/* Cover image (falls back to a placeholder for non-CBZ books). */}
         <div className="flex w-44 flex-shrink-0 flex-col gap-3">
           <div className="relative flex aspect-[2/3] w-full items-center justify-center overflow-hidden rounded-lg bg-primary-light">
-            {coverFailed ? (
+            {coverFailed || !coverSrc ? (
               <BookOpen className="h-12 w-12 text-primary/60" />
             ) : (
               <img
@@ -211,6 +212,10 @@ export default function BookPage() {
           <a
             href={bookDownloadUrl(book.id)}
             download
+            onClick={(e) => {
+              e.preventDefault()
+              void downloadSignedUrl(bookDownloadUrl(book.id))
+            }}
             className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border bg-surface-0 px-3 py-1.5 text-sm font-medium text-text-primary transition hover:bg-surface-1"
           >
             <Download className="h-4 w-4" />

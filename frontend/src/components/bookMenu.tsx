@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { BookOpen, ExternalLink, Download, ListPlus, Pencil } from 'lucide-react'
 import type { MenuItem } from '@ui'
+import { downloadSignedUrl } from '@kubuno/sdk'
 import { bookDownloadUrl } from '../api'
 
 /** Minimal book shape needed to build a context menu. */
@@ -46,12 +47,7 @@ export function useBookContextMenu(opts: BookMenuOptions = {}) {
         icon: <Download className="h-4 w-4" />,
         // Trigger a download without leaving the page.
         onClick: () => {
-          const a = document.createElement('a')
-          a.href = bookDownloadUrl(book.id)
-          a.download = ''
-          document.body.appendChild(a)
-          a.click()
-          a.remove()
+          void downloadSignedUrl(bookDownloadUrl(book.id), '')
         },
       },
     ]

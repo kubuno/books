@@ -371,7 +371,8 @@ export async function getBook(id: string): Promise<{
 }
 
 // ── Cover image URLs ──────────────────────────────────────────────────────────
-// Authenticated by the core via cookie (loaded directly in <img src>, no token).
+// Loaded directly in <img src>: callers must sign these URLs (useSignedUrl /
+// signedUrl from @kubuno/sdk) so they carry a short-lived ticket.
 // Books without a CBZ (epub/pdf only) return 404/415; callers fall back to a
 // placeholder via the <img onError> handler.
 
@@ -387,8 +388,8 @@ export function seriesCoverUrl(seriesId: string): string {
 
 // ── Reading progress & reader assets ──────────────────────────────────────────
 // NB: book entity routes use the double prefix `/books/books/...` (module_id +
-// entity). Image/raw URLs below are loaded directly in <img>/fetch — the core
-// authenticates them via cookie, so no Authorization header is needed.
+// entity). Image/raw URLs below are loaded directly in <img>/pdf.js — callers
+// must sign them (useSignedUrl / signedUrl from @kubuno/sdk) before use.
 
 /** Per-user reading progress for a book. */
 export interface Progress {
@@ -763,12 +764,12 @@ export async function getFacets(): Promise<Facets> {
 
 // ── P7: downloads, duplicates, OPDS ───────────────────────────────────────────
 
-/** Direct URL to download a book's primary file (authenticated via cookie). */
+/** Direct URL to download a book's primary file (sign it with downloadSignedUrl). */
 export function bookDownloadUrl(bookId: string): string {
   return `/api/v1/books/books/${bookId}/download`
 }
 
-/** URL to the OPDS catalog feed (authenticated via cookie). */
+/** URL to the OPDS catalog feed (shown to the user for external OPDS clients). */
 export const OPDS_URL = '/api/v1/books/opds'
 
 /** A group of books sharing the same content hash (potential duplicates). */

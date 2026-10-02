@@ -4,6 +4,7 @@ import { Spinner } from '@ui'
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react'
 import * as pdfjs from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+import { signedUrl } from '@kubuno/sdk'
 import { formatRawUrl } from '../api'
 import { ReaderToolbar, ToolbarButton } from './ReaderShell'
 import { useReaderPrefs, useAutoHideToolbar, useFullscreen } from './prefs'
@@ -26,7 +27,7 @@ interface Props {
 /**
  * PDF reader powered by pdfjs-dist. Renders the current page to a <canvas> with
  * prev/next navigation and ±zoom. The raw file is streamed from the module with
- * cookie credentials; the worker is self-hosted (see workerSrc above).
+ * a signed stream ticket; the worker is self-hosted (see workerSrc above).
  */
 export default function PdfReader({ formatId, title, startPage, onBack, onProgress }: Props) {
   const { t } = useTranslation('books')
@@ -46,9 +47,16 @@ export default function PdfReader({ formatId, title, startPage, onBack, onProgre
   // Load the document once.
   useEffect(() => {
     let cancelled = false
-    const task = pdfjs.getDocument({ url: formatRawUrl(formatId), withCredentials: true })
-    task.promise
+    let task: ReturnType<typeof pdfjs.getDocument> | null = null
+    // pdf.js issues Range requests, hence the long-lived `stream` ticket.
+    signedUrl(formatRawUrl(formatId), { purpose: 'stream' })
+      .then((url) => {
+        if (cancelled) return undefined
+        task = pdfjs.getDocument({ url })
+        return task.promise
+      })
       .then((doc) => {
+        if (!doc) return
         if (cancelled) {
           void doc.cleanup()
           return
@@ -64,7 +72,7 @@ export default function PdfReader({ formatId, title, startPage, onBack, onProgre
     return () => {
       cancelled = true
       // Destroying the loading task tears down the worker & document.
-      void task.destroy()
+      void task?.destroy()
       docRef.current = null
     }
   }, [formatId])

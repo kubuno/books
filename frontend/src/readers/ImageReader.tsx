@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Spinner, Checkbox } from '@ui'
+import { signedUrl, useSignedUrl } from '@kubuno/sdk'
 import { pageImageUrl } from '../api'
 import { ReaderToolbar, ToolbarSelect } from './ReaderShell'
 import {
@@ -19,6 +20,17 @@ interface Props {
   onBack: () => void
   /** Debounced progress writer (page is 0-based; pass completed on the last page). */
   onProgress: (page: number, completed: boolean) => void
+}
+
+/** `<img>` whose `src` is signed with a ticket; nothing is loaded until it arrives. */
+function SignedPageImg({
+  src,
+  ...rest
+}: { src: string } & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'> & {
+  ref?: React.Ref<HTMLImageElement>
+}) {
+  const signed = useSignedUrl(src)
+  return <img src={signed} {...rest} />
 }
 
 /**
@@ -55,9 +67,17 @@ export default function ImageReader({
 
   // Prefetch the next two pages so paging feels instant.
   useEffect(() => {
+    let cancelled = false
     for (let i = 1; i <= 2; i++) {
       const n = page + i
-      if (n < pageCount) new Image().src = url(n)
+      if (n < pageCount) {
+        void signedUrl(url(n)).then((src) => {
+          if (!cancelled) new Image().src = src
+        }).catch(() => {})
+      }
+    }
+    return () => {
+      cancelled = true
     }
   }, [page, pageCount, url])
 
@@ -234,7 +254,7 @@ export default function ImageReader({
             style={fit === 'original' ? { transform: `scale(${zoom})` } : undefined}
           >
             {(mode === 'double' ? spread : [page]).map((n) => (
-              <img
+              <SignedPageImg
                 key={n}
                 src={url(n)}
                 alt={`page ${n + 1}`}
@@ -252,7 +272,7 @@ export default function ImageReader({
         >
           <div className={`mx-auto flex max-w-3xl flex-col items-center ${mode === 'continuous' ? 'gap-2 py-2' : 'gap-0'}`}>
             {Array.from({ length: pageCount }, (_, n) => (
-              <img
+              <SignedPageImg
                 key={n}
                 ref={(el) => {
                   pageEls.current[n] = el

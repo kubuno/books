@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useAuthStore, useImageCacheStore } from '@kubuno/sdk'
+import { useAuthStore, useImageCacheStore, useSignedUrl } from '@kubuno/sdk'
 import { Button, MenuDropdown, useMenuDropdown, type MenuItem } from '@ui'
 import { BookOpen, Pencil, FolderPlus, Plus, Globe, Library as LibraryIcon } from 'lucide-react'
 import {
@@ -113,7 +113,8 @@ export default function SeriesPage() {
   const tags = series?.tags ?? []
   // Always attempt the cover URL (it serves the downloaded series artwork OR a
   // book-derived cover); fall back to an icon only once the image actually fails.
-  const showCover = !!series && !coverFailed
+  const coverSrc = useSignedUrl(id ? `${seriesCoverUrl(id)}?v=${cacheVer}` : null)
+  const showCover = !!series && !coverFailed && !!coverSrc
 
   return (
     <div className="w-full p-6" data-module="books">
@@ -131,7 +132,7 @@ export default function SeriesPage() {
         <div className="mx-auto sm:mx-0 h-72 w-48 flex-shrink-0 overflow-hidden rounded-xl bg-surface-2 shadow-md ring-1 ring-border">
           {showCover ? (
             <img
-              src={`${seriesCoverUrl(id)}?v=${cacheVer}`}
+              src={coverSrc}
               alt={series?.name ?? ''}
               className="h-full w-full object-cover"
               onError={() => setCoverFailed(true)}

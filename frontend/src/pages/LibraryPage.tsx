@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import { Button } from '@ui'
-import { useAuthStore, useImageCacheStore } from '@kubuno/sdk'
+import { useAuthStore, useImageCacheStore, useSignedUrl } from '@kubuno/sdk'
 import { Layers, BookOpen, CheckSquare, Pencil, X } from 'lucide-react'
 import { listLibraries, listSeries, listBooks, seriesCoverUrl, bookCoverUrl } from '../api'
 import CoverCard from '../components/CoverCard'
@@ -14,6 +14,17 @@ import { Breadcrumb } from '../components/Breadcrumb'
 import { CardGrid, LoadingState, EmptyState } from '../components/shared'
 
 /** A single library: its series grid + loose (series-less) books. */
+/** Cover used as a CSS background: the URL is signed before it reaches `url()`. */
+function SignedCoverBg({ url }: { url: string }) {
+  const src = useSignedUrl(url)
+  return (
+    <span
+      className="flex aspect-[2/3] w-full items-center justify-center bg-surface-2"
+      style={src ? { backgroundImage: `url(${src})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
+    />
+  )
+}
+
 export default function LibraryPage() {
   const { id = '' } = useParams<{ id: string }>()
   const { t } = useTranslation('books')
@@ -166,10 +177,7 @@ export default function LibraryPage() {
                       >
                         <CheckSquare className="h-3.5 w-3.5" />
                       </span>
-                      <span
-                        className="flex aspect-[2/3] w-full items-center justify-center bg-surface-2"
-                        style={{ backgroundImage: `url(${bookCoverUrl(b.id)}?v=${cacheVer})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
-                      />
+                      <SignedCoverBg url={`${bookCoverUrl(b.id)}?v=${cacheVer}`} />
                       <span className="truncate px-2.5 py-2 text-sm font-medium text-text-primary">
                         {b.title}
                       </span>

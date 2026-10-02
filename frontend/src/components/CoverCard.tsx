@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BookOpen } from 'lucide-react'
 import { MenuDropdown, useMenuDropdown, type MenuItem } from '@ui'
+import { useSignedUrl } from '@kubuno/sdk'
 import FormatBadge from './FormatBadge'
 
 /**
  * Cover thumbnail used across grids (books & series).
  *
- * When `coverUrl` is set, the real cover image is rendered (authenticated by the
- * core via cookie, like Drive thumbnails). Books without a CBZ (epub/pdf only)
+ * When `coverUrl` is set, the real cover image is rendered (the URL is signed
+ * here with a short-lived ticket, like Drive thumbnails). Books without a CBZ (epub/pdf only)
  * return 404/415, so on image error we fall back to the colored placeholder
  * block + BookOpen icon.
  */
@@ -59,7 +60,9 @@ export default function CoverCard({
   const bg = colorFor(title)
   // Falls back to the placeholder when the cover image fails to load.
   const [imgFailed, setImgFailed] = useState(false)
-  const showImage = !!coverUrl && !imgFailed
+  const signedCover = useSignedUrl(coverUrl)
+  // While the ticket is being fetched the placeholder is shown.
+  const showImage = !!signedCover && !imgFailed
   const menu = useMenuDropdown()
 
   return (
@@ -82,7 +85,7 @@ export default function CoverCard({
       >
         {showImage ? (
           <img
-            src={coverUrl ?? undefined}
+            src={signedCover}
             alt={title}
             className="h-full w-full object-cover"
             loading="lazy"

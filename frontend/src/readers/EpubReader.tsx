@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Spinner } from '@ui'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import ePub, { type Rendition } from 'epubjs'
+import { api } from '@kubuno/sdk'
 import { formatRawUrl } from '../api'
 import { ReaderToolbar, ToolbarButton, ToolbarSelect } from './ReaderShell'
 import {
@@ -52,32 +53,49 @@ export default function EpubReader({ formatId, title, startLocation, onBack, onP
   useEffect(() => {
     const el = viewRef.current
     if (!el) return
-    const book = ePub(formatRawUrl(formatId))
-    const rendition = book.renderTo(el, { width: '100%', height: '100%', spread: 'auto' })
-    renditionRef.current = rendition
-
-    // Register & apply themes / initial font size.
-    for (const [name, rules] of Object.entries(THEMES)) {
-      rendition.themes.register(name, rules)
-    }
-    rendition.themes.select(prefs.epubTheme)
-    rendition.themes.fontSize(`${prefs.epubFontSize}%`)
-
-    // Debounced CFI progress persistence.
+    let cancelled = false
     let timer: number | undefined
-    rendition.on('relocated', (loc: { start?: { cfi?: string } }) => {
-      const cfi = loc?.start?.cfi
-      if (!cfi) return
-      window.clearTimeout(timer)
-      timer = window.setTimeout(() => onProgressRef.current(cfi), 800)
-    })
+    let book: ReturnType<typeof ePub> | null = null
+    let rendition: Rendition | null = null
 
-    void rendition.display(startLocation || undefined).then(() => setLoading(false))
+    // Load the whole .epub as one ArrayBuffer through the authenticated client
+    // (bearer header) and hand it to epub.js, which then opens it as a single
+    // archive: no sub-resource URL is ever requested without credentials.
+    const rawPath = formatRawUrl(formatId).replace(/^\/api\/v1/, '')
+    api
+      .get<ArrayBuffer>(rawPath, { responseType: 'arraybuffer' })
+      .then(({ data }) => {
+        if (cancelled) return
+        book = ePub(data)
+        rendition = book.renderTo(el, { width: '100%', height: '100%', spread: 'auto' })
+        renditionRef.current = rendition
+
+        // Register & apply themes / initial font size.
+        for (const [name, rules] of Object.entries(THEMES)) {
+          rendition.themes.register(name, rules)
+        }
+        rendition.themes.select(prefs.epubTheme)
+        rendition.themes.fontSize(`${prefs.epubFontSize}%`)
+
+        // Debounced CFI progress persistence.
+        rendition.on('relocated', (loc: { start?: { cfi?: string } }) => {
+          const cfi = loc?.start?.cfi
+          if (!cfi) return
+          window.clearTimeout(timer)
+          timer = window.setTimeout(() => onProgressRef.current(cfi), 800)
+        })
+
+        void rendition.display(startLocation || undefined).then(() => setLoading(false))
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false)
+      })
 
     return () => {
+      cancelled = true
       window.clearTimeout(timer)
-      rendition.destroy()
-      void book.destroy()
+      rendition?.destroy()
+      void book?.destroy()
       renditionRef.current = null
     }
     // Intentionally only re-create when the source file changes.
