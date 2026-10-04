@@ -1,0 +1,15 @@
+[
+  {
+    "Name": "Books (Kubuno Core + browser)",
+    "Projects": [
+      {
+        "Path": "Kubuno.Books.Server.rsproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "frontend\\Kubuno.Books.Web.esproj",
+        "Action": "Start"
+      }
+    ]
+  }
+]
