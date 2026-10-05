@@ -68,6 +68,7 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Fixed
 
+- **Oracle MySQL installs use the migrations written for them.** The module now runs its `mysql-oracle` migration set when the database is Oracle MySQL, instead of the generic MySQL set.
 - **The library installs on Oracle MySQL 8.** Its schema migration gave a
   `TEXT` column a literal default, which MariaDB accepts but MySQL 8 refuses
   (error 1101), so the module could not start on MySQL. On Oracle MySQL a variant
