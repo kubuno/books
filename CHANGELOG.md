@@ -68,6 +68,8 @@ number at release time, and CI publishes that section as the GitHub Release note
 
 ### Fixed
 
+- **Files kept on the server's local storage are found again on Windows and under symlinked storage
+  roots** (shared storage layer updated to kubuno-storage 0.1.2).
 - **Oracle MySQL installs use the migrations written for them.** The module now runs its `mysql-oracle` migration set when the database is Oracle MySQL, instead of the generic MySQL set.
 - **The library installs on Oracle MySQL 8.** Its schema migration gave a
   `TEXT` column a literal default, which MariaDB accepts but MySQL 8 refuses
