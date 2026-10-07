@@ -3,11 +3,11 @@
     "Name": "Books (Kubuno Core + browser)",
     "Projects": [
       {
-        "Path": "Kubuno.Books.Server.rsproj",
+        "Path": "server\\Kubuno.Books.Server.rsproj",
         "Action": "Start"
       },
       {
-        "Path": "frontend\\Kubuno.Books.Web.esproj",
+        "Path": "web\\Kubuno.Books.Web.esproj",
         "Action": "Start"
       }
     ]
