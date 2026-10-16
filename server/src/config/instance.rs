@@ -2,7 +2,7 @@
 //! in the console.
 //!
 //! Declared by `module.toml`'s `[[settings]]`, stored in `core.settings`, and
-//! read back here through `/internal/modules/books/settings` — a module owns its
+//! read back here through `/internal/modules/books/settings` - a module owns its
 //! own schema and cannot read the core's tables, and a background worker has no
 //! user token for the public config route.
 //!
@@ -24,7 +24,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceConfig {
     /// Whether a reader may pull the original file out of the library. Reading
-    /// in the browser is unaffected — the page images keep being served.
+    /// in the browser is unaffected - the page images keep being served.
     pub allow_downloads: bool,
     /// Whether the OPDS catalogue is served at all. It is an unbrowsable,
     /// app-facing surface that hands out acquisition links, so an instance that
@@ -32,7 +32,7 @@ pub struct InstanceConfig {
     /// found the URL.
     pub opds_enabled: bool,
     /// Whether content carrying NO age rating is withheld from readers who have
-    /// an age ceiling. Off, an unrated book is readable by everybody — which is
+    /// an age ceiling. Off, an unrated book is readable by everybody - which is
     /// the whole library until somebody rates it. Consumed by
     /// [`crate::services::access::Restriction::push_age`].
     pub block_unrated: bool,

@@ -24,7 +24,7 @@ pub struct AuthUser {
 /// only worth as much as the proof that the core wrote them: the same proxy
 /// replaces `Authorization` with the module's own `X-Internal-Secret`, handed to
 /// this process at startup. The identity is therefore believed **only** when
-/// that secret is presented and matches — otherwise anyone able to reach the
+/// that secret is presented and matches - otherwise anyone able to reach the
 /// module's port directly could declare any account with any role, which since
 /// this module gained per-library restrictions and age ratings means reading
 /// past both of them, and reaching the admin routes on top.
@@ -55,7 +55,7 @@ pub async fn require_auth(
             }
             // No secret material is logged here, only the fact of the refusal.
             tracing::warn!(
-                "books: en-têtes d'identité présentés sans secret interne valide — ignorés"
+                "books: en-têtes d'identité présentés sans secret interne valide - ignorés"
             );
         }
         None
@@ -98,8 +98,8 @@ pub async fn require_auth(
 /// with, and may therefore have its `X-Kubuno-User-*` headers believed.
 ///
 /// An **empty** configured secret refuses everything. Without that check a
-/// module started outside the core's supervision — with no secret in its
-/// environment — would accept any request sending an empty header, which is the
+/// module started outside the core's supervision - with no secret in its
+/// environment - would accept any request sending an empty header, which is the
 /// misconfiguration most likely to happen and the one that opens the module
 /// widest.
 ///
@@ -126,7 +126,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// True when the request asserts an identity at all — used only to decide
+/// True when the request asserts an identity at all - used only to decide
 /// whether a refusal is worth reporting.
 fn has_identity_headers(headers: &HeaderMap) -> bool {
     headers.contains_key("x-kubuno-user-id")
@@ -138,7 +138,7 @@ fn warn_secret_not_configured() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         tracing::error!(
-            "books: core.internal_secret vide — l'identité portée par les en-têtes du \
+            "books: core.internal_secret vide - l'identité portée par les en-têtes du \
              proxy ne peut pas être authentifiée et sera refusée. Renseignez \
              KUBUNO_INTERNAL_SECRET (valeur remise par le core au démarrage du module)."
         );
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn a_wrong_secret_is_not_trusted() {
         assert!(!internal_secret_matches(&proxied(Some("wrong")), SECRET));
-        // Same length, one byte apart — the case a naive prefix check would pass.
+        // Same length, one byte apart - the case a naive prefix check would pass.
         let mut near = SECRET.to_string();
         near.pop();
         near.push('0');

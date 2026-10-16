@@ -14,7 +14,7 @@ import { CardGrid, LoadingState, EmptyState, PageHeader } from '../components/sh
 const FORMATS = ['', 'cbz', 'cbr', 'cb7', 'pdf', 'epub', 'mobi', 'azw3']
 const SORTS = ['added_desc', 'added_asc', 'title_asc', 'title_desc']
 
-/** P6 — browse all books with faceted filters, a format filter and sort. */
+/** P6 - browse all books with faceted filters, a format filter and sort. */
 export default function BrowsePage() {
   const { t } = useTranslation('books')
   const cacheVer = useImageCacheStore((s) => s.global)

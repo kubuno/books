@@ -251,7 +251,7 @@ pub async fn delete_library(
     }
 
     // Remove now-orphaned cache files (a file may be shared by another library on
-    // the same mount — only delete it when no remaining format references it).
+    // the same mount - only delete it when no remaining format references it).
     for (path,) in cached {
         let still_used = state
             .db

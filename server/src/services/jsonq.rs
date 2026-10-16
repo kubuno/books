@@ -9,7 +9,7 @@
 use kubuno_db::dialect::Backend;
 use kubuno_db::DbQueryBuilder;
 
-/// `col` (a JSON array of scalars) contains the string bound here — the portable
+/// `col` (a JSON array of scalars) contains the string bound here - the portable
 /// form of PostgreSQL's `col @> jsonb_build_array($n)`. `col` is a `&'static
 /// str` column reference, never request data.
 pub fn push_array_contains(qb: &mut DbQueryBuilder, col: &'static str, value: String) {

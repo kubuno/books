@@ -86,7 +86,7 @@ struct RestrictedUserRow {
     age_max:      Option<i32>,
 }
 
-/// GET /books/admin/restrictions — every account, with its restriction.
+/// GET /books/admin/restrictions - every account, with its restriction.
 ///
 /// NOTE: cross-schema join to core.users (PostgreSQL/MySQL only). A module owns
 /// its own schema and this route only ever reads accounts.

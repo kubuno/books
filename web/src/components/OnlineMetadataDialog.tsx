@@ -14,7 +14,7 @@ interface Props {
 }
 
 /**
- * P5 — search an online metadata provider (OpenLibrary / Google) and let the
+ * P5 - search an online metadata provider (OpenLibrary / Google) and let the
  * user pick a match to pre-fill the metadata editor.
  */
 export default function OnlineMetadataDialog({ initialQuery, onClose, onApply }: Props) {

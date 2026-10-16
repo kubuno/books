@@ -10,7 +10,7 @@ import CreateNamedDialog from '../components/CreateNamedDialog'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { LoadingState, EmptyState, PageHeader } from '../components/shared'
 
-/** P6 — grid of collections (groups of series). */
+/** P6 - grid of collections (groups of series). */
 export default function CollectionsPage() {
   const { t } = useTranslation('books')
   const navigate = useNavigate()

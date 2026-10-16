@@ -3,7 +3,7 @@
 // default metadata language live in the module's own DB and are edited through
 // /books/admin/*. Both panes below are custom views (no generic form).
 //
-// This is also where the library management LIVES now — creating, editing,
+// This is also where the library management LIVES now - creating, editing,
 // scanning and deleting a library is an administrator action, so it was moved
 // out of the user-facing browsing pages into this panel.
 

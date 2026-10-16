@@ -18,7 +18,7 @@ const DIRECTIONS = ['ltr', 'rtl', 'vertical', 'webtoon'] as const
 type Direction = (typeof DIRECTIONS)[number]
 
 /**
- * P4 — bulk-edit a subset of fields across several books. Each field is opt-in:
+ * P4 - bulk-edit a subset of fields across several books. Each field is opt-in:
  * only checked fields are sent in the PATCH.
  */
 export default function BulkEditDialog({ ids, onClose, onDone }: Props) {

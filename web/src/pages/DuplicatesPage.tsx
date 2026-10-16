@@ -9,7 +9,7 @@ import { getDuplicates, OPDS_URL } from '../api'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { LoadingState, EmptyState, PageHeader } from '../components/shared'
 
-/** P7 — admin: duplicate groups (same content hash) + an OPDS feed callout. */
+/** P7 - admin: duplicate groups (same content hash) + an OPDS feed callout. */
 export default function DuplicatesPage() {
   const { t } = useTranslation('books')
   const user = useAuthStore((s) => s.user)

@@ -10,7 +10,7 @@ import { useSeriesContextMenu } from '../components/seriesMenu'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { CardGrid, LoadingState, EmptyState } from '../components/shared'
 
-/** P6 — a single collection: grid of its series, each removable. */
+/** P6 - a single collection: grid of its series, each removable. */
 export default function CollectionPage() {
   const { id = '' } = useParams<{ id: string }>()
   const { t } = useTranslation('books')

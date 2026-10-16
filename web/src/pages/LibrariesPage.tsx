@@ -11,7 +11,7 @@ import { CardGrid, LoadingState, EmptyState, PageHeader } from '../components/sh
 /**
  * Home page: read-only library grid + a "recently added" rail. Library
  * management (create / edit / scan / delete) lives in the admin console
- * (Modules ▸ Books), not here — this page only browses.
+ * (Modules ▸ Books), not here - this page only browses.
  */
 export default function LibrariesPage() {
   const { t } = useTranslation('books')

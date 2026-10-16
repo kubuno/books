@@ -1,4 +1,4 @@
-/** MODULE bundle: books — loaded at runtime by the host (cf. vite.config). */
+/** MODULE bundle: books - loaded at runtime by the host (cf. vite.config). */
 import { lazy } from 'react'
 import {
   RouteRegistry,
@@ -38,7 +38,7 @@ export function register() {
   // the core admin console under Modules ▸ Books.
   registerBooksAdmin()
 
-  // Routes (paths are relative to the host shell — no leading slash).
+  // Routes (paths are relative to the host shell - no leading slash).
   const LibrariesPage = lazy(() => import('./pages/LibrariesPage'))
   const LibraryPage = lazy(() => import('./pages/LibraryPage'))
   const SeriesPage = lazy(() => import('./pages/SeriesPage'))

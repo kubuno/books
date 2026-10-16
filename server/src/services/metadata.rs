@@ -10,7 +10,7 @@ fn fmt_num(n: f64) -> String {
     if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") }
 }
 
-/// Whether a JSON value is an empty array (`[]`) or absent — the state that lets
+/// Whether a JSON value is an empty array (`[]`) or absent - the state that lets
 /// embedded metadata fill `authors` / `tags`.
 fn is_empty_json_array(v: &Value) -> bool {
     v.as_array().map(|a| a.is_empty()).unwrap_or(true)
@@ -89,8 +89,8 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
 
     // The age rating is what makes the parental control mean anything: until it
     // is filled, every book is unrated and an age ceiling filters nothing. It is
-    // written only when the instance asks for it, and — like every other field
-    // here — only into an EMPTY column, so an administrator's correction is
+    // written only when the instance asks for it, and - like every other field
+    // here - only into an EMPTY column, so an administrator's correction is
     // never overwritten by a rescan.
     let age_rating = state.instance().import_age_rating.then_some(m.age_rating).flatten();
 
@@ -144,7 +144,7 @@ pub async fn apply_embedded(state: &AppState, book_id: Uuid) -> Result<bool, Boo
 
 /// Import embedded metadata for all books in a library that still lack it (best-effort).
 ///
-/// NOTE on the age rating: the selection below is deliberately narrow — it only
+/// NOTE on the age rating: the selection below is deliberately narrow - it only
 /// picks books that were never enriched at all. So turning `import_age_rating`
 /// ON does not retro-rate a library that was already scanned: it applies to
 /// books indexed from then on. Widening it to "every unrated book" would mean

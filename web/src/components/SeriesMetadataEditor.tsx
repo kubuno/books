@@ -14,7 +14,7 @@ interface Props {
 const DIRECTIONS = ['ltr', 'rtl', 'vertical', 'webtoon'] as const
 type Direction = (typeof DIRECTIONS)[number]
 
-/** P4 — metadata editor for a series (admin only). */
+/** P4 - metadata editor for a series (admin only). */
 export default function SeriesMetadataEditor({ series, onClose }: Props) {
   const { t } = useTranslation('books')
   const qc = useQueryClient()

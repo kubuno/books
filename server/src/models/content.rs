@@ -77,7 +77,7 @@ pub struct BookListItem {
     pub page_count:      Option<i32>,
     pub cover_format_id: Option<Uuid>,
     pub added_at:        DateTime<Utc>,
-    /// Format codes (cbz/pdf/…), attached in Rust after the row is read —
+    /// Format codes (cbz/pdf/…), attached in Rust after the row is read -
     /// aggregating them portably in SQL is not worth a per-engine agg function.
     #[sqlx(skip)]
     pub formats:         Vec<String>,

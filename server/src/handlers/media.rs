@@ -42,8 +42,8 @@ fn resolve_path(state: &AppState, fmt: &Fmt) -> Result<std::path::PathBuf, Books
 
 /// Load a format's file if the requesting user may see its book.
 ///
-/// This is the choke point of the whole reading surface — covers, page counts,
-/// page images and the raw stream all pass through it — which is why the full
+/// This is the choke point of the whole reading surface - covers, page counts,
+/// page images and the raw stream all pass through it - which is why the full
 /// access rule belongs here and not only in the listings.
 async fn visible_format(state: &AppState, user_id: Uuid, format_id: Uuid) -> Result<Fmt, BooksError> {
     let block = state.instance().block_unrated;
@@ -171,7 +171,7 @@ pub async fn series_cover(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, BooksError> {
-    // A downloaded series artwork wins over a book-derived cover — but only once
+    // A downloaded series artwork wins over a book-derived cover - but only once
     // we've confirmed the series is visible to the user.
     let block = state.instance().block_unrated;
     let restriction = Restriction::load(&state.db, user.id).await?;
@@ -240,7 +240,7 @@ pub async fn book_page_count(
         } else if format == "pdf" {
             Ok((decode::pdf_page_count(&path)?, Vec::new()))
         } else {
-            Ok((0, Vec::new())) // EPUB is reflowable — paged client-side
+            Ok((0, Vec::new())) // EPUB is reflowable - paged client-side
         }
     })
     .await

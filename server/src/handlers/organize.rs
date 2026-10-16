@@ -360,7 +360,7 @@ pub async fn delete_saved_search(
 struct Facet { value: String, count: i64 }
 
 /// A facet that could not be computed comes back empty rather than failing the
-/// whole browser — but never silently.
+/// whole browser - but never silently.
 fn facet_failed(e: sqlx::Error) -> Vec<Facet> {
     tracing::error!(error = %e, "Calcul d'une facette books échoué");
     Vec::new()

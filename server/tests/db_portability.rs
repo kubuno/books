@@ -1,5 +1,5 @@
 //! Runs the books module's own migrations and the write/read paths its handlers
-//! use against a real server of **each** engine, from a single compiled binary —
+//! use against a real server of **each** engine, from a single compiled binary -
 //! the proof that the engine is a run-time choice, not a build-time one.
 //!
 //! The scanner reads the `drive`/`core` schemas over the shared database and

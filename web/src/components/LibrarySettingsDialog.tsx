@@ -217,7 +217,7 @@ export default function LibrarySettingsDialog({ mode, library, onClose }: Props)
       .getState()
       .pickFolder({ title: t('books_pick_folder_title') })
     if (!sel) return
-    // sel.name is the canonical "[storage]/path" — shown verbatim in the field.
+    // sel.name is the canonical "[storage]/path" - shown verbatim in the field.
     if (sel.id) {
       setFolder({ id: sel.id, name: sel.name })
       if (!name.trim()) setName(lastSegment(sel.name))
@@ -481,7 +481,7 @@ export default function LibrarySettingsDialog({ mode, library, onClose }: Props)
                       value={
                         library?.files_folder_id
                           ? t('books_folder_linked', { defaultValue: 'Dossier lié' })
-                          : '—'
+                          : '-'
                       }
                       className="w-full cursor-default rounded-md border border-border bg-surface-1 px-3 py-2 text-sm text-text-tertiary outline-none"
                     />

@@ -58,7 +58,7 @@ export interface LibrarySettings {
   }
 }
 
-/** Default library settings — used to seed new libraries and to backfill
+/** Default library settings - used to seed new libraries and to backfill
  * missing fields when merging server-provided settings. */
 export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
   scanner: {
@@ -388,7 +388,7 @@ export function seriesCoverUrl(seriesId: string): string {
 
 // ── Reading progress & reader assets ──────────────────────────────────────────
 // NB: book entity routes use the double prefix `/books/books/...` (module_id +
-// entity). Image/raw URLs below are loaded directly in <img>/pdf.js — callers
+// entity). Image/raw URLs below are loaded directly in <img>/pdf.js - callers
 // must sign them (useSignedUrl / signedUrl from @kubuno/sdk) before use.
 
 /** Per-user reading progress for a book. */
@@ -469,7 +469,7 @@ export interface AuthorEntry {
   role?: string
 }
 
-/** Editable book fields (all optional — partial PATCH). */
+/** Editable book fields (all optional - partial PATCH). */
 export interface UpdateBookDto {
   title?: string
   sort_title?: string
@@ -492,7 +492,7 @@ export async function updateBook(id: string, fields: UpdateBookDto): Promise<Boo
   return data
 }
 
-/** Editable series fields (all optional — partial PATCH). */
+/** Editable series fields (all optional - partial PATCH). */
 export interface UpdateSeriesDto {
   name?: string
   sort_name?: string

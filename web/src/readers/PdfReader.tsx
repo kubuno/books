@@ -9,7 +9,7 @@ import { formatRawUrl } from '../api'
 import { ReaderToolbar, ToolbarButton } from './ReaderShell'
 import { useReaderPrefs, useAutoHideToolbar, useFullscreen } from './prefs'
 
-// Self-hosted pdf.js worker — bundled by Vite, NO external CDN (sovereignty).
+// Self-hosted pdf.js worker - bundled by Vite, NO external CDN (sovereignty).
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url,

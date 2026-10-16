@@ -9,7 +9,7 @@ import CoverCard from '../components/CoverCard'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { CardGrid, LoadingState, EmptyState } from '../components/shared'
 
-/** P6 — a single reading list: its books in order, each removable. */
+/** P6 - a single reading list: its books in order, each removable. */
 export default function ReadListPage() {
   const { id = '' } = useParams<{ id: string }>()
   const { t } = useTranslation('books')

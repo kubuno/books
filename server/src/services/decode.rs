@@ -188,7 +188,7 @@ fn read_entry_rar(path: &Path, entry: &str) -> Result<(Vec<u8>, String), BooksEr
     Err(BooksError::NotFound(format!("Entrée {entry}")))
 }
 
-// ── EPUB (zip + OPF) — extract the cover image ───────────────────────────────────
+// ── EPUB (zip + OPF) - extract the cover image ───────────────────────────────────
 fn normalize_zip_path(p: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for seg in p.split('/') {
@@ -263,7 +263,7 @@ fn find_epub_cover_href(opf: &str) -> Option<String> {
     item.attribute("href").map(|s| s.to_string())
 }
 
-// ── PDF — page count (rendering is done client-side by the reader) ───────────────
+// ── PDF - page count (rendering is done client-side by the reader) ───────────────
 pub fn pdf_page_count(path: &Path) -> Result<usize, BooksError> {
     let doc = lopdf::Document::load(path).map_err(|e| BooksError::Storage(e.to_string()))?;
     Ok(doc.get_pages().len())
@@ -285,7 +285,7 @@ pub struct EmbeddedMeta {
     pub rtl:         bool,
     /// Minimum age the content declares, in years, normalised from ComicInfo's
     /// `<AgeRating>`. `None` = the file says nothing, which is NOT the same as
-    /// "suitable for everyone" — see `books.content_ok`.
+    /// "suitable for everyone" - see `books.content_ok`.
     pub age_rating:  Option<i32>,
 }
 
@@ -526,7 +526,7 @@ mod tests {
     }
 
     /// The important half: an unknown or absent rating must NOT be turned into
-    /// an age. A guess here would be a protection that does not exist — the row
+    /// an age. A guess here would be a protection that does not exist - the row
     /// stays unrated, and `books.content_ok` decides what unrated means.
     #[test]
     fn anything_unrecognised_stays_unrated() {

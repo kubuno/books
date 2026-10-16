@@ -10,7 +10,7 @@ import CreateNamedDialog from '../components/CreateNamedDialog'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { LoadingState, EmptyState, PageHeader } from '../components/shared'
 
-/** P6 — grid of reading lists (ordered sets of books). */
+/** P6 - grid of reading lists (ordered sets of books). */
 export default function ReadListsPage() {
   const { t } = useTranslation('books')
   const navigate = useNavigate()

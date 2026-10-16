@@ -176,7 +176,7 @@ export default function SeriesPage() {
           {/* Facts grid */}
           <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
             <Fact label={t('books_book_count_label', { defaultValue: 'Livres' })}>
-              {series ? (series.total_book_count || series.book_count) : '—'}
+              {series ? (series.total_book_count || series.book_count) : '-'}
             </Fact>
             {series?.publisher && (
               <Fact label={t('books_field_publisher', { defaultValue: 'Éditeur' })}>{series.publisher}</Fact>

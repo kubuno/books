@@ -69,7 +69,7 @@ group   = "access"
 type    = "bool"
 default = true
 label   = "Téléchargement des fichiers"
-description = "Désactivé, la lecture dans le navigateur reste entière — seule la récupération du fichier d'origine est refusée, et le catalogue OPDS cesse d'annoncer des liens de téléchargement."
+description = "Désactivé, la lecture dans le navigateur reste entière - seule la récupération du fichier d'origine est refusée, et le catalogue OPDS cesse d'annoncer des liens de téléchargement."
 
 [[settings]]
 key     = "opds_enabled"

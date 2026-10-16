@@ -1,12 +1,12 @@
-//! The two predicates every query returning content to a reader must carry —
-//! library visibility and the age gate — decided in Rust.
+//! The two predicates every query returning content to a reader must carry -
+//! library visibility and the age gate - decided in Rust.
 //!
 //! ## Why this moved out of SQL
 //!
 //! On PostgreSQL these rules were `LANGUAGE sql` functions (`lib_allowed`,
 //! `content_ok`) reading a `uuid[]` restriction column with `= ANY(...)`.
 //! Neither the functions nor arrays exist on MySQL or SQLite. So the reader's
-//! restriction — the set of libraries they may see and their age ceiling — is
+//! restriction - the set of libraries they may see and their age ceiling - is
 //! now loaded once with [`Restriction::load`] and folded into each query as
 //! bound values, through a [`DbQueryBuilder`]. The decision is identical on the
 //! three engines because it is made here, not by the database.
@@ -16,7 +16,7 @@
 //! The visibility rule binds the reader's id and, when the reader is restricted,
 //! the list of allowed library ids. Those are values, so they are *bound*, not
 //! interpolated. Callers therefore assemble their listing with a
-//! [`DbQueryBuilder`] and let these helpers push the predicate — column names
+//! [`DbQueryBuilder`] and let these helpers push the predicate - column names
 //! and keywords are `&'static str`, every value goes through `push_bind` /
 //! `push_in`.
 
@@ -72,7 +72,7 @@ impl Restriction {
         qb.push("(l.is_shared OR l.owner_id = ").push_bind(user_id).push(")");
         if let Some(ids) = &self.library_ids {
             // Restricted: the library must be in the allowed set. An empty set
-            // renders `IN (NULL)`, which matches nothing — exactly "no library".
+            // renders `IN (NULL)`, which matches nothing - exactly "no library".
             qb.push(" AND l.id").push_in(ids.iter().copied());
         }
     }

@@ -65,7 +65,7 @@ pub async fn put_progress(
 
     // Merge with the existing progress in Rust: a field left out keeps its value
     // (the portable form of the old `COALESCE($n, read_progress.col)` on the
-    // conflict branch — an upsert cannot re-read the stored row per column).
+    // conflict branch - an upsert cannot re-read the stored row per column).
     let existing = state
         .db
         .fetch_optional_as::<(i32, Option<String>, bool)>(
@@ -173,7 +173,7 @@ impl formats::WithFormats for KeepItem {
     fn set_formats(&mut self, formats: Vec<String>) { self.formats = formats; }
 }
 
-/// Books in progress (not finished) — "Keep reading".
+/// Books in progress (not finished) - "Keep reading".
 pub async fn keep_reading(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,

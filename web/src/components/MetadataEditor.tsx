@@ -23,7 +23,7 @@ interface Props {
 const DIRECTIONS = ['ltr', 'rtl', 'vertical', 'webtoon'] as const
 type Direction = (typeof DIRECTIONS)[number]
 
-/** P4 — full metadata editor for a single book (admin only). */
+/** P4 - full metadata editor for a single book (admin only). */
 export default function MetadataEditor({ book, onClose }: Props) {
   const { t } = useTranslation('books')
   const qc = useQueryClient()

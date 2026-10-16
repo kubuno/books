@@ -60,7 +60,7 @@ function FacetGroup({
   )
 }
 
-/** P6 — clickable facet navigator (tags / authors / publishers / languages). */
+/** P6 - clickable facet navigator (tags / authors / publishers / languages). */
 export default function FilterPanel({ facets, filters, onChange }: Props) {
   const { t } = useTranslation('books')
 

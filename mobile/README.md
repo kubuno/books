@@ -1,4 +1,4 @@
-# Kubuno Books — mobile apps
+# Kubuno Books - mobile apps
 
 Reserved for the mobile clients of the Books module, organised like the other platforms of this repository:
 

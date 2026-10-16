@@ -72,7 +72,7 @@ impl Settings {
             .add_source(File::with_name("config").required(false))
             .add_source(File::with_name("/etc/kubuno/modules/books/config").required(false));
 
-        // Variables injected by the core supervisor — highest priority.
+        // Variables injected by the core supervisor - highest priority.
         builder = builder
             .set_override_option("core.url",             std::env::var("KUBUNO_CORE_URL").ok())?
             .set_override_option("core.internal_secret", std::env::var("KUBUNO_INTERNAL_SECRET").ok())?

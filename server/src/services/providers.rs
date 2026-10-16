@@ -156,7 +156,7 @@ pub async fn search_series(state: &AppState, name: &str, hint: Option<&str>) -> 
             out.push(c);
         }
     }
-    // Google Books: search the series name (+ hint) — descriptions are per-volume but
+    // Google Books: search the series name (+ hint) - descriptions are per-volume but
     // often summarise the series; useful as a fallback.
     let gq = match hint {
         Some(h) if !h.is_empty() => format!("{name} {h}"),

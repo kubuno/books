@@ -697,7 +697,7 @@ pub async fn duplicates(
 ) -> Result<Json<Value>, BooksError> {
     let block = state.instance().block_unrated;
     let restriction = Restriction::load(&state.db, user.id).await?;
-    // Rows of (content_hash, book_id, title), grouped in Rust — jsonb_agg has no
+    // Rows of (content_hash, book_id, title), grouped in Rust - jsonb_agg has no
     // portable spelling. Only readable books participate.
     let mut qb = DbQueryBuilder::new(
         state.db.backend(),

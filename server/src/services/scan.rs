@@ -49,7 +49,7 @@ async fn global_meta_lang(db: &DbPool) -> Option<String> {
 }
 
 /// Upsert a row (minting the id in Rust) and read back the id of the row that
-/// now exists — the natural-key row, whether it was inserted or already there.
+/// now exists - the natural-key row, whether it was inserted or already there.
 /// The portable stand-in for `INSERT ... ON CONFLICT ... RETURNING id`.
 async fn upsert_id(
     tx: &mut DbTx,
@@ -273,7 +273,7 @@ async fn run_scan(state: &AppState, library_id: Uuid) -> Result<(), BooksError> 
     let folder_ids: Vec<Uuid> = folders.iter().map(|f| f.id).collect();
     let folder_by_id: HashMap<Uuid, &FolderRow> = folders.iter().map(|f| (f.id, f)).collect();
 
-    // Book files inside the subtree — only the enabled file types.
+    // Book files inside the subtree - only the enabled file types.
     let mut exts: Vec<String> = Vec::new();
     if scan_comics { exts.extend(["cbz", "cbr", "cb7"].iter().map(|s| s.to_string())); }
     if scan_pdf { exts.push("pdf".into()); }

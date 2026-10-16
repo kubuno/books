@@ -1,4 +1,4 @@
-# ─── Kubuno Books — Configuration ────────────────────────────────────────────
+# ─── Kubuno Books - Configuration ────────────────────────────────────────────
 # Copiez ce fichier en config.toml et adaptez les valeurs.
 # Les variables d'environnement préfixées KB__ surchargent ce fichier.
 # Exemple : KB__SERVER__PORT=3121
